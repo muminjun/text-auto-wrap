@@ -1,4 +1,5 @@
 import 'boundaries.dart';
+import 'exceptions.dart';
 import 'models.dart';
 
 /// The raw, validated offsets produced by one named phrase-model level.
@@ -136,7 +137,7 @@ final class CandidateAggregator {
           offset: offset,
           penalty: context.model.fallbackPenalty,
           levelName: null,
-          consensusCount: 0,
+          consensusCount: countsByOffset[offset] ?? 0,
           isFallback: true,
         ),
       );
@@ -154,10 +155,8 @@ CandidateAggregator lowestPenalty() => const CandidateAggregator._(1);
 /// Keeps candidates predicted by at least [minimumModels] distinct levels.
 CandidateAggregator consensus({required int minimumModels}) {
   if (minimumModels < 1) {
-    throw ArgumentError.value(
-      minimumModels,
-      'minimumModels',
-      'must be at least one.',
+    throw const InvalidModelConfigurationException(
+      'Consensus minimumModels must be at least one.',
     );
   }
   return CandidateAggregator._(minimumModels);

@@ -156,6 +156,20 @@ void main() {
         ]);
         expect(snapshot.candidates.first.levelName, 'third');
         expect(snapshot.candidates.first.consensusCount, 3);
+        expect(
+          snapshot.candidates.map((candidate) => candidate.consensusCount),
+          [3, 1, 1],
+        );
+      },
+    );
+
+    test(
+      'rejects a non-positive minimum model count with a typed exception',
+      () {
+        expect(
+          () => consensus(minimumModels: 0),
+          throwsA(isA<InvalidModelConfigurationException>()),
+        );
       },
     );
   });
