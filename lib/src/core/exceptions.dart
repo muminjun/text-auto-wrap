@@ -23,3 +23,8 @@ final class InvalidModelConfigurationException extends TextWrapException {
 final class TextRangeMeasurementException extends TextWrapException {
   const TextRangeMeasurementException(super.message);
 }
+
+/// Thrown when inserting a break would discard custom InlineSpan state.
+final class UnsupportedSpanTransformationException extends TextWrapException {
+  const UnsupportedSpanTransformationException(super.message);
+}

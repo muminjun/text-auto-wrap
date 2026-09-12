@@ -15,6 +15,7 @@ final class EncodedInlineSpan {
 }
 
 /// Encodes nested [TextSpan] and [WidgetSpan] instances without losing metadata.
+/// Custom spans are recorded as opaque ranges and can be reused unchanged.
 EncodedInlineSpan encodeInlineSpan(InlineSpan span) {
   final buffer = StringBuffer();
 
@@ -24,8 +25,9 @@ EncodedInlineSpan encodeInlineSpan(InlineSpan span) {
       buffer.write('\uFFFC');
       return _SourceSpan(span, start, buffer.length, buffer.length, const []);
     }
-    if (span is! TextSpan) {
-      throw ArgumentError.value(span, 'span', 'Unsupported InlineSpan type.');
+    if (span is! TextSpan || span.runtimeType != TextSpan) {
+      buffer.write(span.toPlainText(includeSemanticsLabels: false));
+      return _SourceSpan(span, start, buffer.length, buffer.length, const []);
     }
     buffer.write(span.text ?? '');
     final textEnd = buffer.length;
@@ -41,15 +43,19 @@ EncodedInlineSpan encodeInlineSpan(InlineSpan span) {
 
 /// Adds newline leaves at strictly ascending interior UTF-16 [offsets].
 ///
-/// Grapheme interiors and positions adjacent to existing CR/LF newlines throw
-/// [InvalidBoundaryException]. Only changed text and its ancestors are cloned;
-/// untouched spans and all widget children retain their identity. Every split
-/// text run retains its original metadata, including semantic labels and IDs.
-/// Flutter does not provide a mapping for splitting those labels by text offset.
+/// Grapheme interiors and positions adjacent to existing CR, LF, U+2028, or
+/// U+2029 newlines throw [InvalidBoundaryException]. Only changed text and its
+/// ancestors are cloned; untouched spans and all widget children retain their
+/// identity. Breaks inside a span's own text are inserted into that string to
+/// keep its semantics and gesture target intact. Boundaries between spans use
+/// newline leaves. Changing a custom span or TextSpan subclass throws
+/// [UnsupportedSpanTransformationException] so callers can fall back to native
+/// rendering without discarding custom state.
 InlineSpan insertLineBreaks(EncodedInlineSpan encoded, List<int> offsets) {
   validateOffsets(encoded.text, offsets);
   for (final offset in offsets) {
-    bool isNewline(int unit) => unit == 0x0a || unit == 0x0d;
+    bool isNewline(int unit) =>
+        unit == 0x0a || unit == 0x0d || unit == 0x2028 || unit == 0x2029;
     if (isNewline(encoded.text.codeUnitAt(offset - 1)) ||
         isNewline(encoded.text.codeUnitAt(offset))) {
       throw InvalidBoundaryException(
@@ -87,35 +93,33 @@ final class _BreakInserter {
 
   InlineSpan rebuild(_SourceSpan source) {
     final span = source.span;
-    if (span is! TextSpan) return span;
+    if (span is! TextSpan || span.runtimeType != TextSpan) {
+      if (next < offsets.length &&
+          offsets[next] > source.start &&
+          offsets[next] < source.end) {
+        throw UnsupportedSpanTransformationException(
+          'A break at ${offsets[next]} would change ${span.runtimeType}.',
+        );
+      }
+      return span;
+    }
     final children = <InlineSpan>[];
-    var text = span.text;
-    var changed = false;
+    var childrenChanged = false;
+    StringBuffer? rewrittenText;
     var previous = source.start;
 
     while (next < offsets.length && offsets[next] < source.textEnd) {
       final offset = offsets[next++];
-      final fragment = span.text!.substring(
-        previous - source.start,
-        offset - source.start,
-      );
-      if (!changed) {
-        text = fragment;
-      } else {
-        children.add(_copyTextSpan(span, fragment, null));
-      }
-      children.add(const TextSpan(text: '\n'));
-      changed = true;
+      rewrittenText ??= StringBuffer();
+      rewrittenText
+        ..write(
+          span.text!.substring(previous - source.start, offset - source.start),
+        )
+        ..write('\n');
       previous = offset;
     }
-    if (changed) {
-      children.add(
-        _copyTextSpan(
-          span,
-          span.text!.substring(previous - source.start),
-          null,
-        ),
-      );
+    if (rewrittenText != null) {
+      rewrittenText.write(span.text!.substring(previous - source.start));
     }
 
     void insertAt(int offset) {
@@ -124,7 +128,7 @@ final class _BreakInserter {
           offset < source.end) {
         children.add(const TextSpan(text: '\n'));
         next++;
-        changed = true;
+        childrenChanged = true;
       }
     }
 
@@ -132,11 +136,15 @@ final class _BreakInserter {
     for (final child in source.children) {
       final rebuilt = rebuild(child);
       children.add(rebuilt);
-      if (!identical(rebuilt, child.span)) changed = true;
+      if (!identical(rebuilt, child.span)) childrenChanged = true;
       insertAt(child.end);
     }
-    if (!changed) return span;
-    return _copyTextSpan(span, text, List<InlineSpan>.unmodifiable(children));
+    if (rewrittenText == null && !childrenChanged) return span;
+    return _copyTextSpan(
+      span,
+      rewrittenText?.toString() ?? span.text,
+      childrenChanged ? List<InlineSpan>.unmodifiable(children) : span.children,
+    );
   }
 }
 

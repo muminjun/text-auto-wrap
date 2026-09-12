@@ -15,7 +15,6 @@ export 'src/core/strategy.dart';
 export 'src/core/diagnostics.dart';
 export 'src/core/plan.dart';
 export 'src/core/select_text_wrap.dart';
-export 'src/flutter/span_codec.dart';
 export 'src/models/budoux_parser.dart';
 export 'src/models/language_detection.dart';
 

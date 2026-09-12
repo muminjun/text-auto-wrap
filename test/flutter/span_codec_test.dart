@@ -1,6 +1,9 @@
+import 'dart:ui' as ui;
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:text_auto_wrap/src/flutter/span_codec.dart';
 import 'package:text_auto_wrap/text_auto_wrap.dart';
 
 void main() {
@@ -30,7 +33,7 @@ void main() {
   });
 
   test(
-    'splits nested text with all metadata and preserves untouched spans',
+    'breaks nested text with all metadata and preserves untouched spans',
     () {
       final recognizer = TapGestureRecognizer();
       addTearDown(recognizer.dispose);
@@ -76,25 +79,55 @@ void main() {
       expect(rebuiltBranch, isNot(same(branch)));
       expect(rebuiltBranch.style, same(style));
       expect(rebuiltBranch.children!.last, same(secondWidget));
-      final runs = _textSpans(
-        rebuilt,
-      ).where((span) => const ['a', 'bc', 'd'].contains(span.text));
-      expect(runs, hasLength(3));
-      for (final run in runs) {
-        _expectMetadata(run, leaf);
-      }
+      final rebuiltLeaf = rebuiltBranch.children!.first as TextSpan;
+      expect(rebuiltLeaf.text, 'a\nbc\nd');
+      _expectMetadata(rebuiltLeaf, leaf);
+      expect(rebuiltLeaf.children, same(leaf.children));
       final widgets = _allSpans(rebuilt).whereType<WidgetSpan>().toList();
       expect(widgets[0], same(widget));
       expect(widgets[0].child, same(widget.child));
       expect(widgets[1], same(secondWidget));
       expect(widgets[1].child, same(secondWidget.child));
-      final newlines = _textSpans(rebuilt).where((span) => span.text == '\n');
-      expect(newlines, hasLength(2));
-      for (final newline in newlines) {
-        expect(newline, same(const TextSpan(text: '\n')));
-      }
     },
   );
+
+  test('internal breaks retain one effective semantics and gesture unit', () {
+    final recognizer = TapGestureRecognizer();
+    addTearDown(recognizer.dispose);
+    final root = TextSpan(
+      text: 'abcd',
+      semanticsLabel: 'spoken letters',
+      semanticsIdentifier: 'letters',
+      recognizer: recognizer,
+      locale: const Locale('ko'),
+      spellOut: true,
+    );
+
+    final rebuilt = insertLineBreaks(encodeInlineSpan(root), [1, 3]);
+
+    expect(_plain(rebuilt), 'a\nbc\nd');
+    expect(rebuilt.toPlainText(), 'spoken letters');
+    final semantics = rebuilt.getSemanticsInformation();
+    expect(semantics, hasLength(1));
+    expect(semantics.single.text, 'a\nbc\nd');
+    expect(semantics.single.semanticsLabel, 'spoken letters');
+    expect(semantics.single.semanticsIdentifier, 'letters');
+    expect(semantics.single.recognizer, same(recognizer));
+    expect(semantics.single.requiresOwnNode, isTrue);
+    final attributes = semantics.single.stringAttributes;
+    expect(attributes.whereType<ui.LocaleStringAttribute>(), hasLength(1));
+    expect(attributes.whereType<ui.SpellOutStringAttribute>(), hasLength(1));
+    for (final offset in [0, 2, 3, 5]) {
+      expect(
+        rebuilt.getSpanForPosition(TextPosition(offset: offset)),
+        same(rebuilt),
+      );
+    }
+    expect(
+      _textSpans(rebuilt).where((span) => span.recognizer != null),
+      hasLength(1),
+    );
+  });
 
   test('inserts at span and widget edges without cloning intact leaves', () {
     const left = TextSpan(text: 'ab');
@@ -113,6 +146,69 @@ void main() {
         isTrue,
       );
     }
+    final newlines = _textSpans(rebuilt).where((span) => span.text == '\n');
+    expect(newlines, hasLength(2));
+    for (final newline in newlines) {
+      expect(newline, same(const TextSpan(text: '\n')));
+    }
+  });
+
+  test('reuses unchanged TextSpan subclasses and rejects changed ones', () {
+    const custom = _CustomTextSpan(text: 'ab', marker: 'custom state');
+    const root = TextSpan(
+      children: [
+        custom,
+        TextSpan(text: 'cd'),
+      ],
+    );
+    final encoded = encodeInlineSpan(root);
+
+    expect(insertLineBreaks(encodeInlineSpan(custom), []), same(custom));
+    final rebuilt = insertLineBreaks(encoded, [2, 3]) as TextSpan;
+    expect(_plain(rebuilt), 'ab\nc\nd');
+    expect(rebuilt.children!.first, same(custom));
+    expect(
+      () => insertLineBreaks(encoded, [1]),
+      throwsA(isA<UnsupportedSpanTransformationException>()),
+    );
+  });
+
+  test('rejects a changed subclass ancestor without demoting its state', () {
+    const root = _CustomTextSpan(
+      marker: 'ancestor state',
+      children: [
+        TextSpan(text: 'ab'),
+        TextSpan(text: 'cd'),
+      ],
+    );
+    for (final offset in [1, 2]) {
+      expect(
+        () => insertLineBreaks(encodeInlineSpan(root), [offset]),
+        throwsA(isA<UnsupportedSpanTransformationException>()),
+      );
+    }
+  });
+
+  test('encodes and reuses opaque spans until a break must transform them', () {
+    const opaque = _OpaqueSpan('ab');
+    const root = TextSpan(
+      children: [
+        opaque,
+        TextSpan(text: 'cd'),
+      ],
+    );
+
+    final encoded = encodeInlineSpan(root);
+
+    expect(encoded.text, 'abcd');
+    expect(insertLineBreaks(encodeInlineSpan(opaque), []), same(opaque));
+    final rebuilt = insertLineBreaks(encoded, [2, 3]) as TextSpan;
+    expect(_plain(rebuilt), 'ab\nc\nd');
+    expect(rebuilt.children!.first, same(opaque));
+    expect(
+      () => insertLineBreaks(encoded, [1]),
+      throwsA(isA<UnsupportedSpanTransformationException>()),
+    );
   });
 
   test('splits root text before its existing children without reordering', () {
@@ -217,6 +313,23 @@ void main() {
       );
     }
   });
+
+  for (final newline in ['\u2028', '\u2029']) {
+    for (final offset in [2, 3]) {
+      test('rejects hard separator ${newline.codeUnitAt(0)} at $offset', () {
+        final root = TextSpan(
+          text: 'ab',
+          children: [TextSpan(text: '${newline}cd')],
+        );
+        final encoded = encodeInlineSpan(root);
+        expect(encoded.text, 'ab${newline}cd');
+        expect(
+          () => insertLineBreaks(encoded, [offset]),
+          throwsA(isA<InvalidBoundaryException>()),
+        );
+      });
+    }
+  }
 }
 
 String _plain(InlineSpan span) =>
@@ -244,4 +357,65 @@ void _expectMetadata(TextSpan actual, TextSpan original) {
   expect(actual.semanticsIdentifier, same(original.semanticsIdentifier));
   expect(actual.locale, same(original.locale));
   expect(actual.spellOut, original.spellOut);
+}
+
+class _CustomTextSpan extends TextSpan {
+  const _CustomTextSpan({super.text, super.children, required this.marker});
+
+  final String marker;
+}
+
+class _OpaqueSpan extends InlineSpan {
+  const _OpaqueSpan(this.value);
+
+  final String value;
+
+  @override
+  void build(
+    ui.ParagraphBuilder builder, {
+    TextScaler textScaler = TextScaler.noScaling,
+    List<PlaceholderDimensions>? dimensions,
+  }) => builder.addText(value);
+
+  @override
+  bool visitChildren(InlineSpanVisitor visitor) => visitor(this);
+
+  @override
+  bool visitDirectChildren(InlineSpanVisitor visitor) => true;
+
+  @override
+  InlineSpan? getSpanForPositionVisitor(
+    TextPosition position,
+    Accumulator offset,
+  ) {
+    final local = position.offset - offset.value;
+    offset.increment(value.length);
+    return local >= 0 && local < value.length ? this : null;
+  }
+
+  @override
+  void computeToPlainText(
+    StringBuffer buffer, {
+    bool includeSemanticsLabels = true,
+    bool includePlaceholders = true,
+  }) => buffer.write(value);
+
+  @override
+  void computeSemanticsInformation(
+    List<InlineSpanSemanticsInformation> collector,
+  ) {
+    collector.add(InlineSpanSemanticsInformation(value));
+  }
+
+  @override
+  int? codeUnitAtVisitor(int index, Accumulator offset) {
+    final local = index - offset.value;
+    offset.increment(value.length);
+    return local >= 0 && local < value.length ? value.codeUnitAt(local) : null;
+  }
+
+  @override
+  RenderComparison compareTo(InlineSpan other) => identical(this, other)
+      ? RenderComparison.identical
+      : RenderComparison.layout;
 }
