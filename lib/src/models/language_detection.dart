@@ -108,9 +108,7 @@ LanguageDetectionResult detectTextWrapLanguage(String text, Locale? locale) {
   }
 
   final languageCode = locale?.languageCode.toLowerCase();
-  if (languageCode == 'ko' &&
-      hangulRatio >= _localeAssistanceMinimum &&
-      hangulRatio <= _localeAssistanceMaximum) {
+  if (languageCode == 'ko' && hangulRatio >= _localeAssistanceMinimum) {
     return _selected(
       hangulCount: hangulCount,
       latinCount: latinCount,
@@ -120,9 +118,7 @@ LanguageDetectionResult detectTextWrapLanguage(String text, Locale? locale) {
     );
   }
   final latinRatio = 1 - hangulRatio;
-  if (languageCode == 'en' &&
-      latinRatio >= _localeAssistanceMinimum &&
-      latinRatio <= _localeAssistanceMaximum) {
+  if (languageCode == 'en' && latinRatio >= _localeAssistanceMinimum) {
     return _selected(
       hangulCount: hangulCount,
       latinCount: latinCount,
@@ -158,27 +154,81 @@ LanguageDetectionResult _selected({
 
 const _dominanceThreshold = .7;
 const _localeAssistanceMinimum = .4;
-const _localeAssistanceMaximum = .6;
+
+// Frozen Unicode 16.0.0 intersections of Scripts.txt's Hangul/Latin entries
+// with UnicodeData.txt's assigned General_Category Letter entries. Source:
+// https://www.unicode.org/Public/16.0.0/ucd/{Scripts,UnicodeData}.txt
+// SHA-256: Scripts.txt 9e88f0a677df47311106340be8ede2ecdacd9c1c931831218d2be6d5508e0039;
+// UnicodeData.txt ff58e5823bd095166564a006e47d111130813dcf8bf234ef79fa51a870edb48f.
+const _hangulLetterRanges = <(int, int)>[
+  (0x1100, 0x11FF),
+  (0x3131, 0x318E),
+  (0xA960, 0xA97C),
+  (0xAC00, 0xD7A3),
+  (0xD7B0, 0xD7C6),
+  (0xD7CB, 0xD7FB),
+  (0xFFA0, 0xFFBE),
+  (0xFFC2, 0xFFC7),
+  (0xFFCA, 0xFFCF),
+  (0xFFD2, 0xFFD7),
+  (0xFFDA, 0xFFDC),
+];
+
+const _latinLetterRanges = <(int, int)>[
+  (0x41, 0x5A),
+  (0x61, 0x7A),
+  (0xAA, 0xAA),
+  (0xBA, 0xBA),
+  (0xC0, 0xD6),
+  (0xD8, 0xF6),
+  (0xF8, 0x2B8),
+  (0x2E0, 0x2E4),
+  (0x1D00, 0x1D25),
+  (0x1D2C, 0x1D5C),
+  (0x1D62, 0x1D65),
+  (0x1D6B, 0x1D77),
+  (0x1D79, 0x1DBE),
+  (0x1E00, 0x1EFF),
+  (0x2071, 0x2071),
+  (0x207F, 0x207F),
+  (0x2090, 0x209C),
+  (0x212A, 0x212B),
+  (0x2132, 0x2132),
+  (0x214E, 0x214E),
+  (0x2183, 0x2184),
+  (0x2C60, 0x2C7F),
+  (0xA722, 0xA787),
+  (0xA78B, 0xA7CD),
+  (0xA7D0, 0xA7D1),
+  (0xA7D3, 0xA7D3),
+  (0xA7D5, 0xA7DC),
+  (0xA7F2, 0xA7FF),
+  (0xAB30, 0xAB5A),
+  (0xAB5C, 0xAB64),
+  (0xAB66, 0xAB69),
+  (0xFB00, 0xFB06),
+  (0xFF21, 0xFF3A),
+  (0xFF41, 0xFF5A),
+  (0x10780, 0x10785),
+  (0x10787, 0x107B0),
+  (0x107B2, 0x107BA),
+  (0x1DF00, 0x1DF1E),
+  (0x1DF25, 0x1DF2A),
+];
 
 bool _isHangul(int codePoint) =>
-    (codePoint >= 0xAC00 && codePoint <= 0xD7A3) ||
-    (codePoint >= 0x1100 && codePoint <= 0x11FF) ||
-    (codePoint >= 0x3130 && codePoint <= 0x318F) ||
-    (codePoint >= 0xA960 && codePoint <= 0xA97F) ||
-    (codePoint >= 0xD7B0 && codePoint <= 0xD7FF);
+    _containsCodePoint(codePoint, _hangulLetterRanges);
 
 bool _isLatinLetter(int codePoint) =>
-    (codePoint >= 0x41 && codePoint <= 0x5A) ||
-    (codePoint >= 0x61 && codePoint <= 0x7A) ||
-    (codePoint >= 0xC0 && codePoint <= 0xD6) ||
-    (codePoint >= 0xD8 && codePoint <= 0xF6) ||
-    (codePoint >= 0xF8 && codePoint <= 0x2AF) ||
-    (codePoint >= 0x1D00 && codePoint <= 0x1DBF) ||
-    (codePoint >= 0x1E00 && codePoint <= 0x1EFF) ||
-    (codePoint >= 0x2C60 && codePoint <= 0x2C7F) ||
-    (codePoint >= 0xA720 && codePoint <= 0xA7FF) ||
-    (codePoint >= 0xAB30 && codePoint <= 0xAB6F) ||
-    (codePoint >= 0xFB00 && codePoint <= 0xFB06);
+    _containsCodePoint(codePoint, _latinLetterRanges);
+
+bool _containsCodePoint(int codePoint, List<(int, int)> ranges) {
+  for (final range in ranges) {
+    if (codePoint < range.$1) return false;
+    if (codePoint <= range.$2) return true;
+  }
+  return false;
+}
 
 /// Bundled experimental title presets using immutable BudouX-format weights.
 ///
