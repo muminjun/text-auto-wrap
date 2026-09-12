@@ -14,6 +14,11 @@ final class InvalidBoundaryException extends TextWrapException {
   const InvalidBoundaryException(super.message);
 }
 
+/// Thrown when a model configuration violates its public contract.
+final class InvalidModelConfigurationException extends TextWrapException {
+  const InvalidModelConfigurationException(super.message);
+}
+
 /// Thrown when a range measurement cannot be used for layout calculation.
 final class TextRangeMeasurementException extends TextWrapException {
   const TextRangeMeasurementException(super.message);

@@ -81,7 +81,7 @@ void main() {
       );
       expect(
         () => PhraseModel(levels: model.levels, fallbackPenalty: -1),
-        throwsArgumentError,
+        throwsA(isA<InvalidModelConfigurationException>()),
       );
     });
 
@@ -90,7 +90,7 @@ void main() {
 
       expect(
         () => PhraseModel(levels: const [], fallbackPenalty: 1),
-        throwsArgumentError,
+        throwsA(isA<InvalidModelConfigurationException>()),
       );
       expect(
         () => PhraseModel(
@@ -99,7 +99,7 @@ void main() {
           ],
           fallbackPenalty: 1,
         ),
-        throwsArgumentError,
+        throwsA(isA<InvalidModelConfigurationException>()),
       );
       expect(
         () => PhraseModel(
@@ -109,7 +109,7 @@ void main() {
           ],
           fallbackPenalty: 1,
         ),
-        throwsArgumentError,
+        throwsA(isA<InvalidModelConfigurationException>()),
       );
     });
   });

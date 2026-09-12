@@ -1,4 +1,5 @@
 import 'boundaries.dart';
+import 'exceptions.dart';
 
 /// A configuration accepted by the text wrapping engine.
 abstract interface class TextWrapModel {}
@@ -18,13 +19,13 @@ final class PhraseModelLevel {
     required this.penalty,
   }) {
     if (name.isEmpty) {
-      throw ArgumentError.value(name, 'name', 'must not be empty');
+      throw const InvalidModelConfigurationException(
+        'Level names must not be empty.',
+      );
     }
     if (!penalty.isFinite || penalty < 0) {
-      throw ArgumentError.value(
-        penalty,
-        'penalty',
-        'must be finite and non-negative',
+      throw const InvalidModelConfigurationException(
+        'Level penalties must be finite and non-negative.',
       );
     }
   }
@@ -48,27 +49,21 @@ final class PhraseModel implements TextWrapModel {
     this.boundaryMode = BoundaryMode.spaces,
   }) : levels = List<PhraseModelLevel>.unmodifiable(levels) {
     if (this.levels.isEmpty) {
-      throw ArgumentError.value(
-        levels,
-        'levels',
-        'must contain at least one level',
+      throw const InvalidModelConfigurationException(
+        'Phrase models must contain at least one level.',
       );
     }
     if (!fallbackPenalty.isFinite || fallbackPenalty < 0) {
-      throw ArgumentError.value(
-        fallbackPenalty,
-        'fallbackPenalty',
-        'must be finite and non-negative',
+      throw const InvalidModelConfigurationException(
+        'Fallback penalties must be finite and non-negative.',
       );
     }
 
     final names = <String>{};
     for (final level in this.levels) {
       if (!names.add(level.name)) {
-        throw ArgumentError.value(
-          levels,
-          'levels',
-          'must have unique level names',
+        throw const InvalidModelConfigurationException(
+          'Phrase model level names must be unique.',
         );
       }
     }
