@@ -227,6 +227,7 @@ final class _Calculator implements LayoutCalculator {
     LineBreakLayout? baseline,
   }) {
     _validateWidth(maxWidth);
+    _validateCandidates(text, candidates);
     if (candidates.length > _maxCandidateCount) {
       return LayoutCalculationLimit(
         kind: LayoutCalculationLimitKind.candidates,
@@ -234,7 +235,6 @@ final class _Calculator implements LayoutCalculator {
         observedCount: candidates.length,
       );
     }
-    _validateCandidates(text, candidates);
     final budget = _Budget();
     final measurements = _Measurements(measureRange);
     try {

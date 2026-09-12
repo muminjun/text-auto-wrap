@@ -446,6 +446,54 @@ void main() {
     },
   );
 
+  test('rejects malformed over-limit offsets before measuring', () {
+    final text = '😀${'a' * 4098}';
+    final measure = FixedRangeMeasurer(text);
+    for (final calculator in [optimalLayouts(), greedy(), nearbyLayouts()]) {
+      for (final replacement in [
+        (0, 3), // Duplicate the next boundary.
+        (0, 4), // Unordered boundaries.
+        (4096, text.length), // Source-end boundary.
+        (4096, text.length + 1), // Out-of-range boundary.
+        (0, 1), // Split the initial surrogate pair.
+      ]) {
+        final candidates = List.generate(4097, (i) => candidate(i + 2));
+        candidates[replacement.$1] = candidate(replacement.$2);
+        expect(
+          () => calculator.calculate(
+            text: text,
+            candidates: candidates,
+            maxWidth: 20,
+            measureRange: measure.call,
+          ),
+          throwsA(isA<InvalidBoundaryException>()),
+        );
+        expect(measure.calls, isEmpty);
+      }
+    }
+  });
+
+  test('rejects malformed over-limit penalties before measuring', () {
+    final text = 'a' * 4098;
+    final measure = FixedRangeMeasurer(text);
+    for (final calculator in [optimalLayouts(), greedy(), nearbyLayouts()]) {
+      for (final penalty in [-1.0, double.nan, double.infinity]) {
+        final candidates = List.generate(4097, (i) => candidate(i + 1));
+        candidates[4096] = candidate(4097, penalty);
+        expect(
+          () => calculator.calculate(
+            text: text,
+            candidates: candidates,
+            maxWidth: 20,
+            measureRange: measure.call,
+          ),
+          throwsA(isA<InvalidModelConfigurationException>()),
+        );
+        expect(measure.calls, isEmpty);
+      }
+    }
+  });
+
   test('state ceiling returns a typed outcome instead of partial layouts', () {
     const length = 220;
     final text = 'a' * length;
