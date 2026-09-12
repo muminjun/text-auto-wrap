@@ -3,15 +3,48 @@ text_auto_wrap
 This distribution contains a modified Dart/Flutter port of upstream work.
 
 semantic-wrap
-Copyright Woohyun Park
+Copyright 2026 Woohyun Park
 Source: https://github.com/woohyun-park/semantic-wrap
 License: Apache License 2.0
 Pinned upstream commit: 54ed67688aa5292f14970cae10bbabd9a11f1b5d
 
-BudouX parser and model work
-Copyright Google LLC
+Adapted source files at that commit:
+- packages/core/src/core/budoux-parser.ts
+  -> lib/src/models/budoux_parser.dart
+- packages/core/src/core/predictors.ts
+  -> lib/src/models/budoux_parser.dart
+- packages/en/src/models.ts
+  -> lib/src/models/english_model.dart
+- packages/ko/src/models.ts
+  -> lib/src/models/korean_model.dart
+
+Modifications for text_auto_wrap (2026): translated TypeScript inference and
+model tables to Dart; adapted the BoundaryPredictor API; added typed model
+validation and immutable map/result snapshots; explicitly clamped UTF-16
+substring windows. All bundled feature strings and integer weights are
+preserved. Preset adapters map source whitespace-run starts to the permitted
+UTF-16 run-end offsets used by this package and filter other raw predictions.
+
+Preset names and penalties follow packages/en/MODEL_CARD.md and
+packages/ko/MODEL_CARD.md. Regression examples are adapted from the language
+packages' README.md, README-ko_kr.md, and tests/en.test.ts or tests/ko.test.ts.
+The bundled title-model weights are semantic-wrap work by Woohyun Park;
+they are not Google-trained language models.
+
+BudouX parser work
+Copyright 2021 Google LLC
 Source: https://github.com/google/budoux
 License: Apache License 2.0
 
-The semantic-wrap and BudouX-derived work in this distribution has been
-modified as part of an original Dart/Flutter port.
+The following notice is preserved from packages/core/NOTICE at the pinned
+semantic-wrap commit:
+
+@semantic-wrap/core
+Copyright 2026 Woohyun Park
+
+This product includes a small BudouX-compatible model inference
+implementation adapted from the BudouX Parser, Copyright 2021 Google LLC,
+licensed under the Apache License 2.0.
+
+BudouX: https://github.com/google/budoux
+Apache License 2.0: https://www.apache.org/licenses/LICENSE-2.0
