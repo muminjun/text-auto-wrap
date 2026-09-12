@@ -75,7 +75,8 @@ final class PredictionContext {
   /// The configured predictor levels and boundary rules.
   final PhraseModel model;
 
-  List<BreakPrediction> _predict() {
+  /// Evaluates and validates every level without aggregating candidates.
+  List<BreakPrediction> predict() {
     return List<BreakPrediction>.unmodifiable([
       for (final level in model.levels)
         () {
@@ -92,14 +93,46 @@ final class PredictionContext {
 }
 
 /// A strategy that turns model predictions into layout candidates.
-final class CandidateAggregator {
+abstract interface class PredictionAggregator {
+  /// Aggregates supplied predictions, or predicts when omitted.
+  PredictionSnapshot aggregate(
+    PredictionContext context, {
+    List<BreakPrediction>? predictions,
+  });
+}
+
+final class CandidateAggregator implements PredictionAggregator {
   const CandidateAggregator._(this._minimumModels);
 
   final int _minimumModels;
 
   /// Evaluates each model level and returns an immutable diagnostic snapshot.
-  PredictionSnapshot aggregate(PredictionContext context) {
-    final predictions = context._predict();
+  @override
+  PredictionSnapshot aggregate(
+    PredictionContext context, {
+    List<BreakPrediction>? predictions,
+  }) {
+    predictions ??= context.predict();
+    if (predictions.length != context.model.levels.length) {
+      throw const InvalidModelConfigurationException(
+        'Predictions must contain one record per model level.',
+      );
+    }
+    for (var index = 0; index < predictions.length; index++) {
+      final prediction = predictions[index];
+      final level = context.model.levels[index];
+      if (prediction.levelName != level.name ||
+          prediction.penalty != level.penalty) {
+        throw const InvalidModelConfigurationException(
+          'Prediction metadata must match the model level.',
+        );
+      }
+      validateOffsets(
+        context.text,
+        prediction.offsets,
+        mode: context.model.boundaryMode,
+      );
+    }
     final candidatesByOffset = <int, BreakCandidate>{};
     final countsByOffset = <int, int>{};
 
