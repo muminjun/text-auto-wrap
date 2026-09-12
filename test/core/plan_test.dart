@@ -2,6 +2,60 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:text_auto_wrap/text_auto_wrap.dart';
 
 void main() {
+  for (final (name, ranges, widths)
+      in <(String, List<TextLineRange>, List<double>)>[
+        (
+          'range does not split at selected break',
+          [const TextLineRange(0, 5)],
+          [5],
+        ),
+        (
+          'omitted source prefix',
+          [const TextLineRange(1, 2), const TextLineRange(3, 5)],
+          [1, 2],
+        ),
+        (
+          'omitted interior source content',
+          [const TextLineRange(0, 1), const TextLineRange(3, 5)],
+          [1, 2],
+        ),
+        (
+          'omitted source suffix',
+          [const TextLineRange(0, 2), const TextLineRange(3, 4)],
+          [2, 1],
+        ),
+        (
+          'forged finite widths',
+          [const TextLineRange(0, 2), const TextLineRange(3, 5)],
+          [0.1, 0.1],
+        ),
+      ]) {
+    test('rejects custom calculated $name', () {
+      final plan = createTextWrapPlan(
+        text: 'aa bb',
+        model: PhraseModel(
+          levels: [
+            PhraseModelLevel(
+              name: 'p',
+              predictor: CountingPredictor(),
+              penalty: 0,
+            ),
+          ],
+          fallbackPenalty: 1,
+        ),
+        strategy: LineBreakStrategy(
+          calculator: InconsistentCalculator(ranges, widths),
+        ),
+      );
+      expect(
+        () => plan.select(
+          maxWidth: 10,
+          measureRange: (start, end) => (end - start).toDouble(),
+        ),
+        throwsA(isA<TextWrapException>()),
+      );
+    });
+  }
   test(
     'custom calculator cannot forge candidate costs or stale width status',
     () {
@@ -306,6 +360,29 @@ final class ForgedCalculator implements LayoutCalculator {
           isFallback: true,
         ),
       ],
+    ),
+  ]);
+}
+
+final class InconsistentCalculator implements LayoutCalculator {
+  InconsistentCalculator(this.ranges, this.widths);
+  final List<TextLineRange> ranges;
+  final List<double> widths;
+
+  @override
+  LayoutCalculationResult calculate({
+    required String text,
+    required List<BreakCandidate> candidates,
+    required double maxWidth,
+    required TextRangeMeasurer measureRange,
+    LineBreakLayout? baseline,
+  }) => LayoutCalculationSuccess([
+    LineBreakLayout(
+      sourceText: text,
+      ranges: ranges,
+      widths: widths,
+      maxWidth: maxWidth,
+      selectedCandidates: [candidates.single],
     ),
   ]);
 }

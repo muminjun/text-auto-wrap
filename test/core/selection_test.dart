@@ -40,6 +40,36 @@ PhraseModel model() => PhraseModel(
 );
 
 void main() {
+  for (final separator in ['\u2028', '\u2029']) {
+    test(
+      'native hard separator U+${separator.codeUnitAt(0).toRadixString(16)} has no semantic cost',
+      () {
+        final text = 'aa${separator}bb';
+        final native = LineBreakLayout(
+          sourceText: text,
+          ranges: [const TextLineRange(0, 2), const TextLineRange(3, 5)],
+          widths: [2, 2],
+          maxWidth: 10,
+        );
+        final result = selectTextWrap(
+          TextWrapInput(
+            text: text,
+            model: model(),
+            maxWidth: 10,
+            nativeLayout: native,
+            measureRange: (start, end) => (end - start).toDouble(),
+          ),
+          diagnostics: true,
+        );
+        expect(result.reason, 'nativeNoModelImprovement');
+        expect(result.source, TextWrapSelectionSource.native);
+        expect(result.lines, ['aa', 'bb']);
+        expect(result.diagnostics!.nativeLayout!.totalModelCost, 0);
+        expect(result.diagnostics!.nativeLayout!.selectedCandidates, isEmpty);
+        expect(result.breakOffsets, isEmpty);
+      },
+    );
+  }
   test('fitting native requires strictly lower cost and same line count', () {
     for (final calculated in [
       fixture(cost: 1),

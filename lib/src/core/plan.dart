@@ -142,6 +142,30 @@ final class TextWrapPlan {
             'Calculated overflow must use the current maximum width.',
           );
         }
+        final authoritative = LineBreakLayoutCandidate(
+          sourceText: text,
+          selectedCandidates: layout.selectedCandidates,
+        ).measure(maxWidth: maxWidth, measureRange: measure);
+        if (!_sameOffsets(layout.breakOffsets, authoritative.breakOffsets) ||
+            layout.ranges.length != authoritative.ranges.length) {
+          throw const InvalidModelConfigurationException(
+            'Calculated ranges must match the selected breaks.',
+          );
+        }
+        for (var index = 0; index < authoritative.ranges.length; index++) {
+          final actual = layout.ranges[index];
+          final expected = authoritative.ranges[index];
+          if (actual.start != expected.start || actual.end != expected.end) {
+            throw const InvalidModelConfigurationException(
+              'Calculated ranges must preserve authoritative source coverage.',
+            );
+          }
+          if (layout.widths[index] != authoritative.widths[index]) {
+            throw const InvalidModelConfigurationException(
+              'Calculated widths must match the current range measurer.',
+            );
+          }
+        }
         if (!signatures.add(layout.breakOffsets.join(','))) {
           throw const InvalidModelConfigurationException(
             'Calculated layouts must not contain duplicate break sets.',
@@ -308,7 +332,7 @@ final class TextWrapPlan {
       final current = native.ranges[index];
       // Native ranges may include the newline or exclude it in their gap.
       if (RegExp(
-        r'[\r\n]',
+        r'[\r\n\u2028\u2029]',
       ).hasMatch(text.substring(previous.start, current.start))) {
         continue;
       }
