@@ -13,8 +13,13 @@ if [[ ! -d "$flutter_directory/.git" ]]; then
 fi
 
 flutter_version="$($flutter_binary --version)"
-if [[ "$flutter_version" != *"Flutter 3.47.4"* ]]; then
+if ! printf '%s\n' "$flutter_version" | grep -Eq '^Flutter 3\.47\.4([[:space:]]|$)'; then
   printf 'Expected Flutter 3.47.4, but found:\n%s\n' "$flutter_version" >&2
+  exit 1
+fi
+
+if ! printf '%s\n' "$flutter_version" | grep -Eq '(^|[[:space:]])Dart 3\.13\.3([[:space:]]|$)'; then
+  printf 'Expected Dart 3.13.3, but found:\n%s\n' "$flutter_version" >&2
   exit 1
 fi
 
