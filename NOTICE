@@ -1,0 +1,17 @@
+text_auto_wrap
+
+This distribution contains a modified Dart/Flutter port of upstream work.
+
+semantic-wrap
+Copyright Woohyun Park
+Source: https://github.com/woohyun-park/semantic-wrap
+License: Apache License 2.0
+Pinned upstream commit: 54ed67688aa5292f14970cae10bbabd9a11f1b5d
+
+BudouX parser and model work
+Copyright Google LLC
+Source: https://github.com/google/budoux
+License: Apache License 2.0
+
+The semantic-wrap and BudouX-derived work in this distribution has been
+modified as part of an original Dart/Flutter port.
