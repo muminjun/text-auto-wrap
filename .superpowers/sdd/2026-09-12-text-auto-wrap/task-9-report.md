@@ -157,3 +157,57 @@ font is intentionally minimal); range-contained styled slices nevertheless
 remove the cross-boundary-shaping dependency and the bidi regression proves
 the former selection-envelope error. Detailed placeholder paint/selection
 behavior remains Task 10 scope.
+
+## Round 2 review fixes
+
+### RED / GREEN
+
+Focused RED initially produced three behavioral failures: a replacement with a
+different fallback reason did not notify controller listeners; a custom
+`TextSpan` with a nested widget was accepted by the measurement slicer; and
+the renderer recovered that widget case as generic `rendererFallback` rather
+than the stable unsupported-span fallback. The direct controller test schedules
+a test frame after its post-layout commit; real renderer commits already occur
+within a layout frame.
+
+GREEN coverage keeps the diagnostics-only replacement non-notifying while
+requiring notifications for reason, source, and selected-candidate/model-cost
+changes. Codec and widget regressions use a custom subtree containing a
+7-pixel widget followed by an ordinary 13-pixel widget. They prove the
+measurement is conservatively rejected before indices can shift, the result is
+the 40-pixel native baseline with `unsupportedSpanTransformation`, and both
+source widget-span objects remain identical in the final effective span.
+
+### Implementation and Flutter 3.47.4 evidence
+
+Controller equivalence now includes `applied`, `reason`, `source`, overflow,
+source/range/width/break geometry, total model cost, and every public selected
+candidate field (offset, penalty, level, consensus count, and fallback flag).
+It continues to assign the latest immutable result before this comparison, so
+only diagnostics-only replacements are suppressed.
+
+Flutter 3.47.4 documents `InlineSpan.visitChildren` as a preorder descendant
+walk at `packages/flutter/lib/src/painting/inline_span.dart:252-258`;
+`TextSpan` recurses through its children at `painting/text_span.dart:330-341`.
+The slicer uses that public traversal to detect any non-exact/opaque span with
+a `WidgetSpan` descendant. Such spans cannot share the codec's preorder
+placeholder index with `WidgetSpan.extractFromInlineSpan`, so it now throws
+`UnsupportedSpanTransformationException` before constructing dimensions. The
+renderer preserves its already measured native baseline through its existing
+typed fallback path.
+
+### Verification and self-review
+
+```text
+.tooling/flutter/bin/flutter test test/flutter/text_auto_wrap_test.dart test/flutter/span_codec_test.dart test/core test/models  # pass
+.tooling/flutter/bin/flutter test                                                        # 194 passed
+.tooling/flutter/bin/flutter analyze                                                     # No issues found
+git diff --check                                                                         # clean
+```
+
+Modified `lib/src/flutter/controller.dart`, `lib/src/flutter/span_codec.dart`,
+`test/flutter/text_auto_wrap_test.dart`, and
+`test/flutter/span_codec_test.dart`. The conservative fallback deliberately
+leaves custom-span placeholder semantic measurement unsupported; reliable full
+custom-tree index preservation would require a separately specified codec
+mapping. Unrelated `.DS_Store` files remain untouched.

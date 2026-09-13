@@ -71,6 +71,72 @@ void main() {
     },
   );
 
+  testWidgets('controller notifies for material selection outcome changes', (
+    tester,
+  ) async {
+    final controller = TextAutoWrapController();
+    addTearDown(controller.dispose);
+    var notifications = 0;
+    controller.addListener(() => notifications++);
+
+    await tester.pumpWidget(_controllerText(controller));
+    final first = controller.result!;
+    final reasonChanged = TextWrapResult(
+      layout: first.layout,
+      applied: first.applied,
+      reason: 'rendererFallback',
+      source: first.source,
+    );
+
+    controller.commitResult(Object(), reasonChanged);
+    expect(controller.result, same(reasonChanged));
+    await _flushPostFrame(tester);
+    expect(notifications, 2);
+
+    final sourceChanged = TextWrapResult(
+      layout: first.layout,
+      applied: first.applied,
+      reason: reasonChanged.reason,
+      source: TextWrapSelectionSource.native,
+    );
+    controller.commitResult(Object(), sourceChanged);
+    expect(controller.result, same(sourceChanged));
+    await _flushPostFrame(tester);
+    expect(notifications, 3);
+
+    final candidateChanged = LineBreakLayout(
+      sourceText: first.sourceText,
+      ranges: first.ranges,
+      widths: first.widths,
+      maxWidth: 60,
+      selectedCandidates: const [
+        BreakCandidate(
+          offset: 3,
+          penalty: 99,
+          levelName: 'replacement',
+          consensusCount: 1,
+          isFallback: false,
+        ),
+      ],
+    );
+    final costChanged = TextWrapResult(
+      layout: candidateChanged,
+      applied: first.applied,
+      reason: sourceChanged.reason,
+      source: sourceChanged.source,
+    );
+
+    expect(costChanged.breakOffsets, first.breakOffsets);
+    expect(
+      costChanged.layout.totalModelCost,
+      isNot(first.layout.totalModelCost),
+    );
+    controller.commitResult(Object(), costChanged);
+    expect(controller.result, same(costChanged));
+    await _flushPostFrame(tester);
+    expect(notifications, 4);
+  });
+
   testWidgets(
     'range measurement ignores final maxLines truncation after a hard newline',
     (tester) async {
@@ -233,6 +299,58 @@ void main() {
     expect(_ranges(controller.result!), [(0, 2)]);
     expect(controller.result!.widths, [20]);
   });
+
+  testWidgets(
+    'custom span widget descendants fall back without shifting placeholders',
+    (tester) async {
+      const nestedWidget = WidgetSpan(child: SizedBox(width: 7, height: 10));
+      const followingWidget = WidgetSpan(
+        child: SizedBox(width: 13, height: 10),
+      );
+      const custom = _OpaqueTextSpan(text: 'a', children: [nestedWidget]);
+      const source = TextSpan(
+        children: [
+          custom,
+          followingWidget,
+          TextSpan(text: 'b'),
+        ],
+      );
+      final controller = TextAutoWrapController();
+      addTearDown(controller.dispose);
+
+      await tester.pumpWidget(
+        Directionality(
+          textDirection: TextDirection.ltr,
+          child: Align(
+            alignment: Alignment.topLeft,
+            child: SizedBox(
+              width: 100,
+              child: TextAutoWrap.rich(
+                source,
+                style: const TextStyle(fontSize: 10),
+                controller: controller,
+                model: _characterModel([3]),
+                strategy: const LineBreakStrategy(
+                  calculator: _OffsetLayoutCalculator([3]),
+                  selector: _FirstCalculated(),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      final render = _render(tester, 'a\uFFFC\uFFFCb');
+      expect(controller.result!.reason, 'unsupportedSpanTransformation');
+      expect(_ranges(controller.result!), [(0, 4)]);
+      expect(controller.result!.widths, [40]);
+      expect(render.effectiveText, same(render.sourceText));
+      final effectiveSource =
+          (render.effectiveText as TextSpan).children!.single as TextSpan;
+      expect(effectiveSource.children!.first, same(custom));
+      expect(effectiveSource.children![1], same(followingWidget));
+    },
+  );
 
   testWidgets('plain constructor preserves Text layout parameters', (
     tester,
@@ -476,6 +594,11 @@ List<(int, int)> _ranges(TextWrapResult result) => [
   for (final range in result.ranges) (range.start, range.end),
 ];
 
+Future<void> _flushPostFrame(WidgetTester tester) async {
+  tester.binding.scheduleFrame();
+  await tester.pump();
+}
+
 final class _ThrowingCalculator implements LayoutCalculator {
   const _ThrowingCalculator();
 
@@ -497,5 +620,5 @@ final class _ThrowingPredictor implements BoundaryPredictor {
 }
 
 final class _OpaqueTextSpan extends TextSpan {
-  const _OpaqueTextSpan({super.text});
+  const _OpaqueTextSpan({super.text, super.children});
 }

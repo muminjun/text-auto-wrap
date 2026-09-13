@@ -154,6 +154,11 @@ final class _MeasurementSliceBuilder {
       return span;
     }
     if (span is! TextSpan || span.runtimeType != TextSpan) {
+      if (_hasWidgetSpanDescendant(span)) {
+        throw UnsupportedSpanTransformationException(
+          '${span.runtimeType} contains a WidgetSpan that cannot be indexed safely.',
+        );
+      }
       if (!_intersects(source)) return null;
       if (!_contains(source)) {
         throw UnsupportedSpanTransformationException(
@@ -186,6 +191,18 @@ final class _MeasurementSliceBuilder {
 
   bool _contains(_SourceSpan source) =>
       start <= source.start && end >= source.end;
+
+  bool _hasWidgetSpanDescendant(InlineSpan span) {
+    var found = false;
+    span.visitChildren((child) {
+      if (child is WidgetSpan) {
+        found = true;
+        return false;
+      }
+      return true;
+    });
+    return found;
+  }
 }
 
 final class _BreakInserter {

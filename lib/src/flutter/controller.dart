@@ -3,6 +3,7 @@ import 'package:flutter/scheduler.dart';
 
 import '../core/diagnostics.dart';
 import '../core/layout.dart';
+import '../core/prediction.dart';
 
 /// Publishes the most recently committed text-wrap selection after layout.
 ///
@@ -71,6 +72,8 @@ bool _sameResult(TextWrapResult? left, TextWrapResult right) {
   if (identical(left, right)) return true;
   if (left == null ||
       left.applied != right.applied ||
+      left.reason != right.reason ||
+      left.source != right.source ||
       left.overflow != right.overflow) {
     return false;
   }
@@ -78,10 +81,31 @@ bool _sameResult(TextWrapResult? left, TextWrapResult right) {
   final rightLayout = right.layout;
   if (leftLayout.sourceText != rightLayout.sourceText ||
       leftLayout.lineCount != rightLayout.lineCount ||
+      leftLayout.totalModelCost != rightLayout.totalModelCost ||
       !_sameInts(left.breakOffsets, right.breakOffsets) ||
       !_sameRanges(left.ranges, right.ranges) ||
-      !_sameDoubles(left.widths, right.widths)) {
+      !_sameDoubles(left.widths, right.widths) ||
+      !_sameCandidates(
+        leftLayout.selectedCandidates,
+        rightLayout.selectedCandidates,
+      )) {
     return false;
+  }
+  return true;
+}
+
+bool _sameCandidates(List<BreakCandidate> left, List<BreakCandidate> right) {
+  if (left.length != right.length) return false;
+  for (var index = 0; index < left.length; index++) {
+    final leftCandidate = left[index];
+    final rightCandidate = right[index];
+    if (leftCandidate.offset != rightCandidate.offset ||
+        leftCandidate.penalty != rightCandidate.penalty ||
+        leftCandidate.levelName != rightCandidate.levelName ||
+        leftCandidate.consensusCount != rightCandidate.consensusCount ||
+        leftCandidate.isFallback != rightCandidate.isFallback) {
+      return false;
+    }
   }
   return true;
 }

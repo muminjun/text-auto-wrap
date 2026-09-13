@@ -55,6 +55,26 @@ void main() {
     },
   );
 
+  test('rejects opaque custom slices that contain widget descendants', () {
+    const custom = _CustomTextSpan(
+      text: 'a',
+      children: [WidgetSpan(child: SizedBox(width: 7, height: 10))],
+      marker: 'custom widget subtree',
+    );
+    const root = TextSpan(
+      children: [
+        custom,
+        WidgetSpan(child: SizedBox(width: 13, height: 10)),
+        TextSpan(text: 'b'),
+      ],
+    );
+
+    expect(
+      () => sliceInlineSpanForMeasurement(encodeInlineSpan(root), 0, 3),
+      throwsA(isA<UnsupportedSpanTransformationException>()),
+    );
+  });
+
   test(
     'breaks nested text with all metadata and preserves untouched spans',
     () {
