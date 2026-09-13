@@ -119,13 +119,37 @@ class RenderTextAutoWrap extends RenderParagraph {
     TextPainter? sourcePainter;
     LineBreakLayout? nativeLayout;
     try {
-      final placeholders = _layoutPlaceholders(constraints.maxWidth);
+      final encoded = encodeInlineSpan(_sourceText);
+      late final List<PlaceholderDimensions> placeholders;
+      try {
+        placeholders = _layoutPlaceholders(
+          encoded.placeholderSpans,
+          constraints.maxWidth,
+        );
+      } on UnsupportedSpanTransformationException {
+        // An opaque custom span with a widget descendant cannot be indexed for
+        // candidate measurement. Preserve its real native source layout for
+        // the fallback result, without entering the transform path.
+        final nativePlaceholders = _layoutPlaceholdersForNativeFallback(
+          constraints.maxWidth,
+        );
+        sourcePainter = _painter(_sourceText, nativePlaceholders)
+          ..layout(
+            minWidth: constraints.minWidth,
+            maxWidth: _maxLayoutWidth(constraints.maxWidth),
+          );
+        nativeLayout = _nativeLayout(
+          sourcePainter,
+          encoded.text,
+          constraints.maxWidth,
+        );
+        rethrow;
+      }
       sourcePainter = _painter(_sourceText, placeholders)
         ..layout(
           minWidth: constraints.minWidth,
           maxWidth: _maxLayoutWidth(constraints.maxWidth),
         );
-      final encoded = encodeInlineSpan(_sourceText);
       nativeLayout = _nativeLayout(
         sourcePainter,
         encoded.text,
@@ -185,7 +209,35 @@ class RenderTextAutoWrap extends RenderParagraph {
     };
   }
 
-  List<PlaceholderDimensions> _layoutPlaceholders(double maxWidth) {
+  List<PlaceholderDimensions> _layoutPlaceholders(
+    List<WidgetSpan> spans,
+    double maxWidth,
+  ) {
+    // Validate the encoded occurrences before Flutter dereferences a child's
+    // parent-data span or its required baseline type inside the layout helper.
+    if (spans.length != childCount) {
+      throw const _UnmeasurablePlaceholder();
+    }
+    final children = <RenderBox>[];
+    var child = firstChild;
+    for (final span in spans) {
+      final parentData = child?.parentData;
+      final needsBaseline = switch (span.alignment) {
+        PlaceholderAlignment.baseline ||
+        PlaceholderAlignment.aboveBaseline ||
+        PlaceholderAlignment.belowBaseline => true,
+        _ => false,
+      };
+      if (child == null ||
+          parentData is! TextParentData ||
+          !identical(parentData.span, span) ||
+          (needsBaseline && span.baseline == null)) {
+        throw const _UnmeasurablePlaceholder();
+      }
+      children.add(child);
+      child = childAfter(child);
+    }
+
     // Flutter's helper measures the children in logical span order, including
     // WidgetSpan's native nonlinear scale and real baseline. Keep the complete
     // dimensions for the source painter and the codec's indexed range slices.
@@ -194,35 +246,52 @@ class RenderTextAutoWrap extends RenderParagraph {
       ChildLayoutHelper.layoutChild,
       ChildLayoutHelper.getBaseline,
     );
-    if (dimensions.length != childCount) {
+    if (dimensions.length != children.length || childCount != children.length) {
       throw const _UnmeasurablePlaceholder();
     }
-    var child = firstChild;
-    for (final dimension in dimensions) {
-      final span = (child!.parentData! as TextParentData).span;
-      final needsBaseline = switch (dimension.alignment) {
-        PlaceholderAlignment.baseline ||
-        PlaceholderAlignment.aboveBaseline ||
-        PlaceholderAlignment.belowBaseline => true,
-        _ => false,
-      };
+    child = firstChild;
+    for (var index = 0; index < dimensions.length; index++) {
+      final dimension = dimensions[index];
+      final span = spans[index];
+      final parentData = child?.parentData;
       final baselineOffset = dimension.baselineOffset;
-      if (span == null ||
+      if (!identical(child, children[index]) ||
+          parentData is! TextParentData ||
+          !identical(parentData.span, span) ||
           dimension.alignment != span.alignment ||
           dimension.baseline != span.baseline ||
           !dimension.size.isFinite ||
           dimension.size.width < 0 ||
           dimension.size.height < 0 ||
-          (needsBaseline && dimension.baseline == null) ||
+          dimension.size != child!.size ||
           (dimension.alignment == PlaceholderAlignment.baseline &&
-              baselineOffset == null) ||
+              (dimension.baseline == null || baselineOffset == null)) ||
           (baselineOffset != null && !baselineOffset.isFinite)) {
+        throw const _UnmeasurablePlaceholder();
+      }
+      final nativeBaseline =
+          dimension.alignment == PlaceholderAlignment.baseline
+          ? ChildLayoutHelper.getBaseline(
+              child,
+              child.constraints,
+              dimension.baseline!,
+            )
+          : null;
+      if (baselineOffset != nativeBaseline) {
         throw const _UnmeasurablePlaceholder();
       }
       child = childAfter(child);
     }
     return dimensions;
   }
+
+  List<PlaceholderDimensions> _layoutPlaceholdersForNativeFallback(
+    double maxWidth,
+  ) => layoutInlineChildren(
+    maxWidth,
+    ChildLayoutHelper.layoutChild,
+    ChildLayoutHelper.getBaseline,
+  );
 
   TextPainter _painter(
     InlineSpan span,

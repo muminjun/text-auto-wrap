@@ -14,6 +14,33 @@ final class EncodedInlineSpan {
 
   final String text;
   final _SourceSpan _source;
+
+  /// Widget occurrences in the same source-tree order used by range slices.
+  ///
+  /// Literal U+FFFC text contributes no occurrence; a reused WidgetSpan appears
+  /// once per tree position. Opaque widget subtrees cannot be indexed safely.
+  List<WidgetSpan> get placeholderSpans {
+    final spans = <WidgetSpan>[];
+    void visit(_SourceSpan source) {
+      final span = source.span;
+      if (span is WidgetSpan) {
+        spans.add(span);
+      } else {
+        if ((span is! TextSpan || span.runtimeType != TextSpan) &&
+            _hasWidgetSpanDescendant(span)) {
+          throw UnsupportedSpanTransformationException(
+            '${span.runtimeType} contains a WidgetSpan that cannot be indexed safely.',
+          );
+        }
+        for (final child in source.children) {
+          visit(child);
+        }
+      }
+    }
+
+    visit(_source);
+    return List<WidgetSpan>.unmodifiable(spans);
+  }
 }
 
 /// A range-specific span and the source widget-placeholder indices it retains.
@@ -191,18 +218,18 @@ final class _MeasurementSliceBuilder {
 
   bool _contains(_SourceSpan source) =>
       start <= source.start && end >= source.end;
+}
 
-  bool _hasWidgetSpanDescendant(InlineSpan span) {
-    var found = false;
-    span.visitChildren((child) {
-      if (child is WidgetSpan) {
-        found = true;
-        return false;
-      }
-      return true;
-    });
-    return found;
-  }
+bool _hasWidgetSpanDescendant(InlineSpan span) {
+  var found = false;
+  span.visitChildren((child) {
+    if (child is WidgetSpan) {
+      found = true;
+      return false;
+    }
+    return true;
+  });
+  return found;
 }
 
 final class _BreakInserter {

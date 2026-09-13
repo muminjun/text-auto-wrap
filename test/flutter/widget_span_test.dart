@@ -368,6 +368,24 @@ void main() {
 
   for (final (name, dimensions) in <(String, PlaceholderDimensions)>[
     (
+      'finite but wrong size',
+      const PlaceholderDimensions(
+        size: Size(7, 18),
+        alignment: PlaceholderAlignment.baseline,
+        baseline: TextBaseline.alphabetic,
+        baselineOffset: 13,
+      ),
+    ),
+    (
+      'finite but wrong baseline offset',
+      const PlaceholderDimensions(
+        size: Size(20, 18),
+        alignment: PlaceholderAlignment.baseline,
+        baseline: TextBaseline.alphabetic,
+        baselineOffset: 7,
+      ),
+    ),
+    (
       'infinite width',
       const PlaceholderDimensions(
         size: Size(double.infinity, 18),
@@ -462,6 +480,246 @@ void main() {
     expect(render.result!.applied, isTrue);
     expect(render.result!.widths, [40, 20]);
   });
+
+  for (final fault in _MetadataFault.values) {
+    testWidgets('$fault rejects source mapping before the native helper', (
+      tester,
+    ) async {
+      final first = fault == _MetadataFault.missingSourceBaseline
+          ? const _MissingBaselineSpan()
+          : const WidgetSpan(child: SizedBox(width: 12, height: 18));
+      const second = WidgetSpan(child: SizedBox(width: 27, height: 18));
+      final render = _MappingParagraph(
+        [first, second],
+        renderChildCount: switch (fault) {
+          _MetadataFault.missingChild => 1,
+          _MetadataFault.extraChild => 3,
+          _ => 2,
+        },
+      );
+      final firstData = render.firstChild!.parentData! as TextParentData;
+      switch (fault) {
+        case _MetadataFault.missingParentSpan:
+          firstData.span = null;
+        case _MetadataFault.equalButDifferentParentSpan:
+          final replacement = WidgetSpan(child: first.child);
+          expect(replacement, first);
+          expect(identical(replacement, first), isFalse);
+          firstData.span = replacement;
+        case _MetadataFault.reorderedParentSpans:
+          firstData.span = second;
+          (render.lastChild!.parentData! as TextParentData).span = first;
+        case _MetadataFault.missingSourceBaseline:
+        case _MetadataFault.missingChild:
+        case _MetadataFault.extraChild:
+          break;
+      }
+      await tester.pumpWidget(
+        wrapHost(_ParagraphHost(render)),
+        phase: EnginePhase.layout,
+      );
+      expect(render.result!.reason, 'unmeasurablePlaceholder');
+      expect(render.measurementHelperCalls, 0);
+      expect(render.result!.applied, isFalse);
+      expect(render.result!.diagnostics, isNull);
+      expect(render.effectiveText, same(render.sourceText));
+    });
+  }
+
+  for (final fault in _DimensionsFault.values) {
+    testWidgets('$fault dimensions cannot produce candidate widths', (
+      tester,
+    ) async {
+      final render = _DimensionOrderParagraph(fault);
+      await tester.pumpWidget(wrapHost(_ParagraphHost(render)));
+      expect(render.result!.reason, 'unmeasurablePlaceholder');
+      expect(render.result!.applied, isFalse);
+      expect(render.result!.diagnostics, isNull);
+      expect(render.effectiveText, same(render.sourceText));
+      expect(render.nativeLayoutError, isNull);
+      expect(render.firstChild!.size.width, 12);
+      expect(render.lastChild!.size.width, 27);
+    });
+  }
+
+  testWidgets('literal replacement character is not a widget occurrence', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      wrapHost(
+        TextAutoWrap.rich(
+          const TextSpan(
+            text: 'a\uFFFC',
+            children: [
+              WidgetSpan(child: SizedBox(width: 12, height: 18)),
+              TextSpan(text: 'b'),
+            ],
+          ),
+          model: offsetModel([2, 3]),
+          strategy: offsetStrategy([2, 3]),
+        ),
+      ),
+    );
+    final render = wrapRender(tester);
+    expect(render.result!.applied, isTrue);
+    expect(render.childCount, 1);
+    expect(render.result!.widths, [20, 12, 10]);
+    expect(_plain(render.effectiveText), 'a\uFFFC\n\uFFFC\nb');
+  });
+
+  testWidgets('repeated WidgetSpan identities remain separate occurrences', (
+    tester,
+  ) async {
+    const shared = WidgetSpan(child: SizedBox(width: 12, height: 18));
+    await tester.pumpWidget(
+      wrapHost(
+        TextAutoWrap.rich(
+          const TextSpan(
+            text: 'a',
+            children: [
+              shared,
+              TextSpan(text: 'b'),
+              shared,
+              TextSpan(text: 'c'),
+            ],
+          ),
+          model: offsetModel([1, 2, 3, 4]),
+          strategy: offsetStrategy([1, 2, 3, 4]),
+        ),
+      ),
+    );
+    final render = wrapRender(tester);
+    expect(render.result!.applied, isTrue);
+    expect(render.childCount, 2);
+    expect(render.firstChild, isNot(same(render.lastChild)));
+    expect(
+      (render.firstChild!.parentData! as TextParentData).span,
+      same(shared),
+    );
+    expect(
+      (render.lastChild!.parentData! as TextParentData).span,
+      same(shared),
+    );
+    expect(render.result!.widths, [10, 12, 10, 12, 10]);
+    expect(_plain(render.effectiveText), 'a\n\uFFFC\nb\n\uFFFC\nc');
+  });
+}
+
+enum _MetadataFault {
+  missingSourceBaseline,
+  missingParentSpan,
+  equalButDifferentParentSpan,
+  reorderedParentSpans,
+  missingChild,
+  extraChild,
+}
+
+enum _DimensionsFault { missing, extra, reordered }
+
+// WidgetSpan's constructor prevents null baseline types in ordinary debug-mode
+// instances. This subclass reproduces invalid source metadata through its real
+// getter, as may also occur without constructor asserts in release mode.
+class _MissingBaselineSpan extends WidgetSpan {
+  const _MissingBaselineSpan()
+    : super(
+        child: const SizedBox(width: 12, height: 18),
+        alignment: PlaceholderAlignment.baseline,
+        baseline: TextBaseline.alphabetic,
+      );
+
+  @override
+  TextBaseline? get baseline => null;
+}
+
+class _MappingParagraph extends RenderTextAutoWrap {
+  _MappingParagraph(List<WidgetSpan> spans, {int renderChildCount = 2})
+    : super(
+        sourceText: TextSpan(
+          style: wrapStyle,
+          text: 'a',
+          children: [
+            spans[0],
+            const TextSpan(text: 'b'),
+            spans[1],
+            const TextSpan(text: 'c'),
+          ],
+        ),
+        model: offsetModel([1, 2, 3, 4]),
+        strategy: offsetStrategy([1, 2, 3, 4]),
+        textDirection: TextDirection.ltr,
+        children: [
+          for (var i = 0; i < renderChildCount; i++)
+            RenderConstrainedBox(
+              additionalConstraints: BoxConstraints.tightFor(
+                width: i == 0 ? 12 : 27,
+                height: 18,
+              ),
+            ),
+        ],
+      ) {
+    var index = 0;
+    for (var child = firstChild; child != null; child = childAfter(child)) {
+      (child.parentData! as TextParentData).span =
+          spans[index++ % spans.length];
+    }
+  }
+
+  var measurementHelperCalls = 0;
+  Object? nativeLayoutError;
+
+  @override
+  List<PlaceholderDimensions> layoutInlineChildren(
+    double maxWidth,
+    ChildLayouter layoutChild,
+    ChildBaselineGetter getChildBaseline,
+  ) {
+    if (result == null) measurementHelperCalls++;
+    return super.layoutInlineChildren(maxWidth, layoutChild, getChildBaseline);
+  }
+
+  @override
+  void performLayout() {
+    try {
+      super.performLayout();
+    } catch (error) {
+      // Deliberately invalid source/child metadata can also violate native
+      // RenderParagraph's contract. Observe the adapter result before that
+      // native failure without hiding it inside the measurement helper.
+      nativeLayoutError = error;
+      size = constraints.smallest;
+    }
+  }
+
+  @override
+  void paint(PaintingContext context, Offset offset) {}
+}
+
+class _DimensionOrderParagraph extends _MappingParagraph {
+  _DimensionOrderParagraph(this.fault)
+    : super(const [
+        WidgetSpan(child: SizedBox(width: 12, height: 18)),
+        WidgetSpan(child: SizedBox(width: 27, height: 18)),
+      ]);
+  final _DimensionsFault fault;
+
+  @override
+  List<PlaceholderDimensions> layoutInlineChildren(
+    double maxWidth,
+    ChildLayouter layoutChild,
+    ChildBaselineGetter getChildBaseline,
+  ) {
+    final native = super.layoutInlineChildren(
+      maxWidth,
+      layoutChild,
+      getChildBaseline,
+    );
+    if (result != null) return native;
+    return switch (fault) {
+      _DimensionsFault.missing => native.take(1).toList(),
+      _DimensionsFault.extra => [...native, native.last],
+      _DimensionsFault.reordered => native.reversed.toList(),
+    };
+  }
 }
 
 class _ParagraphHost extends LeafRenderObjectWidget {
@@ -514,14 +772,7 @@ class _InvalidDimensionsParagraph extends RenderTextAutoWrap {
         model: offsetModel([3]),
         strategy: offsetStrategy([3]),
         textDirection: TextDirection.ltr,
-        children: [
-          RenderConstrainedBox(
-            additionalConstraints: const BoxConstraints.tightFor(
-              width: 20,
-              height: 18,
-            ),
-          ),
-        ],
+        children: [_RenderBaselineBox()],
       ) {
     (firstChild!.parentData! as TextParentData).span = _placeholder;
   }
