@@ -119,13 +119,7 @@ class RenderTextAutoWrap extends RenderParagraph {
     TextPainter? sourcePainter;
     LineBreakLayout? nativeLayout;
     try {
-      // This is the same protected helper used by RenderParagraph. It produces
-      // the dimensions required by both the source and candidate painters.
-      final placeholders = layoutInlineChildren(
-        constraints.maxWidth,
-        ChildLayoutHelper.layoutChild,
-        ChildLayoutHelper.getBaseline,
-      );
+      final placeholders = _layoutPlaceholders(constraints.maxWidth);
       sourcePainter = _painter(_sourceText, placeholders)
         ..layout(
           minWidth: constraints.minWidth,
@@ -189,6 +183,45 @@ class RenderTextAutoWrap extends RenderParagraph {
       AutoTextWrapModel() => model.resolve(text, locale).model,
       _ => null,
     };
+  }
+
+  List<PlaceholderDimensions> _layoutPlaceholders(double maxWidth) {
+    // Flutter's helper measures the children in logical span order, including
+    // WidgetSpan's native nonlinear scale and real baseline. Keep the complete
+    // dimensions for the source painter and the codec's indexed range slices.
+    final dimensions = layoutInlineChildren(
+      maxWidth,
+      ChildLayoutHelper.layoutChild,
+      ChildLayoutHelper.getBaseline,
+    );
+    if (dimensions.length != childCount) {
+      throw const _UnmeasurablePlaceholder();
+    }
+    var child = firstChild;
+    for (final dimension in dimensions) {
+      final span = (child!.parentData! as TextParentData).span;
+      final needsBaseline = switch (dimension.alignment) {
+        PlaceholderAlignment.baseline ||
+        PlaceholderAlignment.aboveBaseline ||
+        PlaceholderAlignment.belowBaseline => true,
+        _ => false,
+      };
+      final baselineOffset = dimension.baselineOffset;
+      if (span == null ||
+          dimension.alignment != span.alignment ||
+          dimension.baseline != span.baseline ||
+          !dimension.size.isFinite ||
+          dimension.size.width < 0 ||
+          dimension.size.height < 0 ||
+          (needsBaseline && dimension.baseline == null) ||
+          (dimension.alignment == PlaceholderAlignment.baseline &&
+              baselineOffset == null) ||
+          (baselineOffset != null && !baselineOffset.isFinite)) {
+        throw const _UnmeasurablePlaceholder();
+      }
+      child = childAfter(child);
+    }
+    return dimensions;
   }
 
   TextPainter _painter(
@@ -324,10 +357,15 @@ class RenderTextAutoWrap extends RenderParagraph {
 }
 
 String _fallbackReason(Object error) => switch (error) {
+  _UnmeasurablePlaceholder() => 'unmeasurablePlaceholder',
   UnsupportedSpanTransformationException() => 'unsupportedSpanTransformation',
   TextRangeMeasurementException() => 'invalidMeasurement',
   _ => 'rendererFallback',
 };
+
+final class _UnmeasurablePlaceholder implements Exception {
+  const _UnmeasurablePlaceholder();
+}
 
 int? _hardBreakStart(String source, int lineStart, int lineEnd) {
   var offset = lineEnd;

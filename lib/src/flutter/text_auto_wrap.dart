@@ -34,6 +34,10 @@ class TextAutoWrap extends StatelessWidget {
   }) : textSpan = null;
 
   /// Creates rich text that receives semantic line breaks when useful.
+  ///
+  /// [WidgetSpan] children retain their native layout and interaction behavior.
+  /// Baseline-aligned children must report a real baseline for semantic wrapping;
+  /// otherwise the original paragraph is rendered with native wrapping.
   const TextAutoWrap.rich(
     InlineSpan this.textSpan, {
     super.key,
