@@ -24,8 +24,10 @@ final class TextAutoWrapController extends ChangeNotifier {
 
   /// Internal renderer hook; notifies after the current frame.
   void commitResult(Object owner, TextWrapResult value) {
-    if (_disposed || _sameResult(_result, value)) return;
+    if (_disposed) return;
+    final materiallyEquivalent = _sameResult(_result, value);
     _result = value;
+    if (materiallyEquivalent) return;
     if (_notificationScheduled && identical(_owner, owner)) return;
     _owner = owner;
     _schedule(owner);
@@ -69,8 +71,6 @@ bool _sameResult(TextWrapResult? left, TextWrapResult right) {
   if (identical(left, right)) return true;
   if (left == null ||
       left.applied != right.applied ||
-      left.reason != right.reason ||
-      left.source != right.source ||
       left.overflow != right.overflow) {
     return false;
   }

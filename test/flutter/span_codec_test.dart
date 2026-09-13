@@ -33,6 +33,29 @@ void main() {
   });
 
   test(
+    'slices styled text and retains matching widget placeholder indices',
+    () {
+      const childStyle = TextStyle(fontWeight: FontWeight.bold);
+      const root = TextSpan(
+        text: 'x',
+        children: [
+          TextSpan(text: 'ab', style: childStyle),
+          WidgetSpan(child: SizedBox(width: 4, height: 5)),
+          TextSpan(text: 'c'),
+        ],
+      );
+
+      final slice = sliceInlineSpanForMeasurement(encodeInlineSpan(root), 1, 4);
+      final slicedRoot = slice.span as TextSpan;
+
+      expect(_plain(slicedRoot), 'ab\uFFFC');
+      expect(slice.placeholderIndices, [0]);
+      expect((slicedRoot.children!.first as TextSpan).style, childStyle);
+      expect(slicedRoot.children!.last, isA<WidgetSpan>());
+    },
+  );
+
+  test(
     'breaks nested text with all metadata and preserves untouched spans',
     () {
       final recognizer = TapGestureRecognizer();

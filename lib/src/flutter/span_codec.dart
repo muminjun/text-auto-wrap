@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/widgets.dart';
 
 import '../core/boundaries.dart';
@@ -12,6 +14,18 @@ final class EncodedInlineSpan {
 
   final String text;
   final _SourceSpan _source;
+}
+
+/// A range-specific span and the source widget-placeholder indices it retains.
+///
+/// This is an internal renderer bridge. The retained span is only for
+/// measurement: it preserves the original text styling but never changes the
+/// source tree.
+final class InlineSpanMeasurementSlice {
+  const InlineSpanMeasurementSlice(this.span, this.placeholderIndices);
+
+  final InlineSpan span;
+  final List<int> placeholderIndices;
 }
 
 /// Encodes nested [TextSpan] and [WidgetSpan] instances without losing metadata.
@@ -67,6 +81,26 @@ InlineSpan insertLineBreaks(EncodedInlineSpan encoded, List<int> offsets) {
   return _BreakInserter(offsets).rebuild(encoded._source);
 }
 
+/// Clones the styled portion of [encoded] in `[start, end)` for measurement.
+///
+/// Text is sliced at UTF-16 offsets. A [WidgetSpan] is retained only when its
+/// single U+FFFC source unit is wholly selected; [placeholderIndices] maps the
+/// retained widgets back to the public [RenderParagraph.layoutInlineChildren]
+/// dimensions. Partial opaque custom spans cannot safely retain their shaping
+/// or metadata and therefore use the caller's native-layout fallback.
+InlineSpanMeasurementSlice sliceInlineSpanForMeasurement(
+  EncodedInlineSpan encoded,
+  int start,
+  int end,
+) {
+  if (start < 0 || start >= end || end > encoded.text.length) {
+    throw TextRangeMeasurementException(
+      'Measurement range [$start, $end) is outside the source text.',
+    );
+  }
+  return _MeasurementSliceBuilder(start, end).build(encoded._source);
+}
+
 // Each occurrence has its own half-open ranges and children, so shared span
 // instances in different tree paths still map to distinct source positions.
 final class _SourceSpan {
@@ -83,6 +117,75 @@ final class _SourceSpan {
   final int textEnd;
   final int end;
   final List<_SourceSpan> children;
+}
+
+final class _MeasurementSliceBuilder {
+  _MeasurementSliceBuilder(this.start, this.end);
+
+  final int start;
+  final int end;
+  final placeholderIndices = <int>[];
+  var _nextPlaceholderIndex = 0;
+
+  InlineSpanMeasurementSlice build(_SourceSpan source) {
+    final span = _slice(source);
+    if (span == null) {
+      throw TextRangeMeasurementException(
+        'Measurement range [$start, $end) did not retain source text.',
+      );
+    }
+    return InlineSpanMeasurementSlice(
+      span,
+      List<int>.unmodifiable(placeholderIndices),
+    );
+  }
+
+  InlineSpan? _slice(_SourceSpan source) {
+    final span = source.span;
+    if (span is WidgetSpan) {
+      final placeholderIndex = _nextPlaceholderIndex++;
+      if (!_intersects(source)) return null;
+      if (!_contains(source)) {
+        throw UnsupportedSpanTransformationException(
+          'Measurement range [$start, $end) splits a WidgetSpan.',
+        );
+      }
+      placeholderIndices.add(placeholderIndex);
+      return span;
+    }
+    if (span is! TextSpan || span.runtimeType != TextSpan) {
+      if (!_intersects(source)) return null;
+      if (!_contains(source)) {
+        throw UnsupportedSpanTransformationException(
+          'Measurement range [$start, $end) splits ${span.runtimeType}.',
+        );
+      }
+      return span;
+    }
+
+    final textStart = math.max(start, source.start);
+    final textEnd = math.min(end, source.textEnd);
+    final text = textStart < textEnd
+        ? span.text!.substring(textStart - source.start, textEnd - source.start)
+        : null;
+    final children = <InlineSpan>[];
+    for (final child in source.children) {
+      final sliced = _slice(child);
+      if (sliced != null) children.add(sliced);
+    }
+    if (text == null && children.isEmpty) return null;
+    return _copyTextSpan(
+      span,
+      text,
+      children.isEmpty ? null : List<InlineSpan>.unmodifiable(children),
+    );
+  }
+
+  bool _intersects(_SourceSpan source) =>
+      start < source.end && end > source.start;
+
+  bool _contains(_SourceSpan source) =>
+      start <= source.start && end >= source.end;
 }
 
 final class _BreakInserter {

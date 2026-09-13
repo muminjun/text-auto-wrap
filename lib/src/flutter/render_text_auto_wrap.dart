@@ -117,6 +117,7 @@ class RenderTextAutoWrap extends RenderParagraph {
     }
 
     TextPainter? sourcePainter;
+    LineBreakLayout? nativeLayout;
     try {
       // This is the same protected helper used by RenderParagraph. It produces
       // the dimensions required by both the source and candidate painters.
@@ -131,10 +132,9 @@ class RenderTextAutoWrap extends RenderParagraph {
           maxWidth: _maxLayoutWidth(constraints.maxWidth),
         );
       final encoded = encodeInlineSpan(_sourceText);
-      final nativeLayout = _nativeLayout(
+      nativeLayout = _nativeLayout(
         sourcePainter,
         encoded.text,
-        placeholders,
         constraints.maxWidth,
       );
       final model = _resolvedModel(encoded.text);
@@ -145,7 +145,8 @@ class RenderTextAutoWrap extends RenderParagraph {
           maxWidth: constraints.maxWidth,
           nativeLayout: nativeLayout,
           maxLines: maxLines,
-          measureRange: (start, end) => _measureRange(start, end, placeholders),
+          measureRange: (start, end) =>
+              _measureRange(encoded, start, end, placeholders),
         ),
         strategy: _strategy,
         diagnostics: true,
@@ -155,11 +156,14 @@ class RenderTextAutoWrap extends RenderParagraph {
           : _sourceText;
       _setEffectiveText(effective);
       _commit(result);
-    } catch (_) {
+    } catch (error) {
       // Rendering valid content wins over a semantic-layout attempt. This also
       // covers invalid custom predictions, unavailable measurements, and span
       // transformations that would discard custom InlineSpan state.
-      _commitFallback(reason: 'rendererFallback');
+      _commitFallback(
+        reason: _fallbackReason(error),
+        nativeLayout: nativeLayout,
+      );
     } finally {
       sourcePainter?.dispose();
     }
@@ -189,14 +193,17 @@ class RenderTextAutoWrap extends RenderParagraph {
 
   TextPainter _painter(
     InlineSpan span,
-    List<PlaceholderDimensions> placeholders,
-  ) => TextPainter(
+    List<PlaceholderDimensions> placeholders, {
+    bool finalLayout = true,
+  }) => TextPainter(
     text: span,
     textAlign: textAlign,
     textDirection: textDirection,
     textScaler: textScaler,
-    maxLines: maxLines,
-    ellipsis: overflow == TextOverflow.ellipsis ? '\u2026' : null,
+    maxLines: finalLayout ? maxLines : null,
+    ellipsis: finalLayout && overflow == TextOverflow.ellipsis
+        ? '\u2026'
+        : null,
     locale: locale,
     strutStyle: strutStyle,
     textWidthBasis: textWidthBasis,
@@ -206,51 +213,60 @@ class RenderTextAutoWrap extends RenderParagraph {
   LineBreakLayout _nativeLayout(
     TextPainter painter,
     String source,
-    List<PlaceholderDimensions> placeholders,
     double maxWidth,
   ) {
     final ranges = <TextLineRange>[];
+    final widths = <double>[];
     var offset = 0;
-    for (final _ in painter.computeLineMetrics()) {
-      final range = painter.getLineBoundary(TextPosition(offset: offset));
-      ranges.add(TextLineRange(range.start, range.end));
-      offset = range.end;
-      while (offset < source.length && _isNewline(source.codeUnitAt(offset))) {
-        offset++;
+    for (final metrics in painter.computeLineMetrics()) {
+      if (offset == source.length) {
+        ranges.add(TextLineRange(offset, offset));
+        widths.add(metrics.width);
+        continue;
       }
+      final boundary = painter.getLineBoundary(TextPosition(offset: offset));
+      final delimiterStart = metrics.hardBreak
+          ? _hardBreakStart(source, boundary.start, boundary.end)
+          : null;
+      ranges.add(TextLineRange(boundary.start, delimiterStart ?? boundary.end));
+      widths.add(metrics.width);
+      offset = delimiterStart == null
+          ? boundary.end
+          : _nextLineStart(source, delimiterStart);
     }
-    if (ranges.isEmpty) ranges.add(const TextLineRange(0, 0));
+    if (ranges.isEmpty) {
+      ranges.add(const TextLineRange(0, 0));
+      widths.add(0);
+    }
     return LineBreakLayout(
       sourceText: source,
       ranges: ranges,
-      widths: [
-        for (final range in ranges)
-          _measureRange(range.start, range.end, placeholders),
-      ],
+      widths: widths,
       maxWidth: maxWidth,
     );
   }
 
   double _measureRange(
+    EncodedInlineSpan encoded,
     int start,
     int end,
     List<PlaceholderDimensions> placeholders,
   ) {
     if (start == end) return 0;
-    final painter = _painter(_sourceText, placeholders);
+    final slice = sliceInlineSpanForMeasurement(encoded, start, end);
+    final dimensions = [
+      for (final index in slice.placeholderIndices)
+        if (index < placeholders.length)
+          placeholders[index]
+        else
+          throw const TextRangeMeasurementException(
+            'Missing WidgetSpan dimensions.',
+          ),
+    ];
+    final painter = _painter(slice.span, dimensions, finalLayout: false);
     try {
       painter.layout(maxWidth: double.infinity);
-      final boxes = painter.getBoxesForSelection(
-        TextSelection(baseOffset: start, extentOffset: end),
-      );
-      if (boxes.isEmpty) return 0;
-      var left = double.infinity;
-      var right = -double.infinity;
-      for (final box in boxes) {
-        left = math.min(left, box.left);
-        right = math.max(right, box.right);
-      }
-      final width = right - left;
+      final width = painter.width;
       if (!width.isFinite || width < 0) {
         throw TextRangeMeasurementException(
           'TextPainter returned an invalid range width.',
@@ -279,25 +295,65 @@ class RenderTextAutoWrap extends RenderParagraph {
     });
   }
 
-  void _commitFallback({required String reason}) {
+  void _commitFallback({
+    required String reason,
+    LineBreakLayout? nativeLayout,
+  }) {
     _setEffectiveText(_sourceText);
+    final layout = nativeLayout ?? _fallbackLayout();
+    _commit(TextWrapResult.native(layout, reason: reason));
+  }
+
+  LineBreakLayout _fallbackLayout() {
     final source = encodeInlineSpan(_sourceText).text;
     final width = constraints.hasBoundedWidth && constraints.maxWidth.isFinite
         ? math.max(0.0, constraints.maxWidth).toDouble()
         : 0.0;
-    final layout = LineBreakLayout(
+    return LineBreakLayout(
       sourceText: source,
       ranges: [TextLineRange(0, source.length)],
       widths: const [0],
       maxWidth: width,
     );
-    _commit(TextWrapResult.native(layout, reason: reason));
   }
 
   void _commit(TextWrapResult result) {
     _lastResult = result;
     _controller?.commitResult(this, result);
   }
+}
+
+String _fallbackReason(Object error) => switch (error) {
+  UnsupportedSpanTransformationException() => 'unsupportedSpanTransformation',
+  TextRangeMeasurementException() => 'invalidMeasurement',
+  _ => 'rendererFallback',
+};
+
+int? _hardBreakStart(String source, int lineStart, int lineEnd) {
+  var offset = lineEnd;
+  if (offset > lineStart && _isNewline(source.codeUnitAt(offset - 1))) {
+    offset--;
+  }
+  if (offset >= source.length || !_isNewline(source.codeUnitAt(offset))) {
+    return null;
+  }
+  if (source.codeUnitAt(offset) == 0x0a &&
+      offset > lineStart &&
+      source.codeUnitAt(offset - 1) == 0x0d) {
+    return offset - 1;
+  }
+  return offset;
+}
+
+int _nextLineStart(String source, int lineEnd) {
+  if (lineEnd >= source.length) return lineEnd;
+  final codeUnit = source.codeUnitAt(lineEnd);
+  if (codeUnit == 0x0d &&
+      lineEnd + 1 < source.length &&
+      source.codeUnitAt(lineEnd + 1) == 0x0a) {
+    return lineEnd + 2;
+  }
+  return _isNewline(codeUnit) ? lineEnd + 1 : lineEnd;
 }
 
 bool _isNewline(int codeUnit) =>

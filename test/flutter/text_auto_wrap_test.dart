@@ -32,6 +32,208 @@ void main() {
     expect(notifications, 1);
   });
 
+  testWidgets(
+    'controller replaces equivalent diagnostic payload without another notification',
+    (tester) async {
+      final controller = TextAutoWrapController();
+      addTearDown(controller.dispose);
+      var notifications = 0;
+      controller.addListener(() => notifications++);
+
+      await tester.pumpWidget(_controllerText(controller));
+      final first = controller.result!;
+      final replacement = TextWrapResult(
+        layout: first.layout,
+        applied: first.applied,
+        reason: first.reason,
+        source: first.source,
+        diagnostics: TextWrapDiagnostics(
+          candidates: const [
+            BreakCandidate(
+              offset: 3,
+              penalty: 99,
+              levelName: 'replacement',
+              consensusCount: 1,
+              isFallback: false,
+            ),
+          ],
+          selection: const LayoutSelectionDecision.native(
+            reason: 'replacement payload reason',
+          ),
+        ),
+      );
+
+      controller.commitResult(Object(), replacement);
+
+      expect(controller.result, same(replacement));
+      await tester.pumpWidget(_controllerText(controller));
+      expect(notifications, 1);
+    },
+  );
+
+  testWidgets(
+    'range measurement ignores final maxLines truncation after a hard newline',
+    (tester) async {
+      final controller = TextAutoWrapController();
+      addTearDown(controller.dispose);
+
+      await tester.pumpWidget(
+        Directionality(
+          textDirection: TextDirection.ltr,
+          child: Align(
+            alignment: Alignment.topLeft,
+            child: SizedBox(
+              width: 100,
+              child: TextAutoWrap(
+                'abc\ndef',
+                style: const TextStyle(fontSize: 10),
+                maxLines: 1,
+                controller: controller,
+                model: _characterModel([5]),
+                strategy: const LineBreakStrategy(
+                  calculator: _OffsetLayoutCalculator([5]),
+                  selector: _FirstCalculated(),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      final calculated =
+          controller.result!.diagnostics!.calculatedLayouts.single;
+      expect(calculated.widths, [30, 10, 20]);
+    },
+  );
+
+  testWidgets('fallback keeps native empty lines after consecutive LFs', (
+    tester,
+  ) async {
+    final result = await _pumpFallback(tester, 'a\n\nb');
+
+    expect(_ranges(result), [(0, 1), (2, 2), (3, 4)]);
+    expect(result.widths, [10, 0, 10]);
+  });
+
+  testWidgets('fallback keeps native empty lines after CRLF delimiters', (
+    tester,
+  ) async {
+    final result = await _pumpFallback(tester, 'a\r\n\r\nb');
+
+    expect(_ranges(result), [(0, 1), (3, 3), (5, 6)]);
+    expect(result.widths, [10, 0, 10]);
+  });
+
+  testWidgets('fallback keeps leading and trailing empty native lines', (
+    tester,
+  ) async {
+    final result = await _pumpFallback(tester, '\na\n');
+
+    expect(_ranges(result), [(0, 0), (1, 2), (3, 3)]);
+    expect(result.widths, [0, 10, 0]);
+  });
+
+  testWidgets('predictor failure keeps the measured native baseline', (
+    tester,
+  ) async {
+    final result = await _pumpFallback(
+      tester,
+      'a\n\nb',
+      model: PhraseModel(
+        levels: [
+          PhraseModelLevel(
+            name: 'throws',
+            predictor: const _ThrowingPredictor(),
+            penalty: 0,
+          ),
+        ],
+        fallbackPenalty: 100,
+        boundaryMode: BoundaryMode.characters,
+      ),
+      strategy: const LineBreakStrategy(),
+    );
+
+    expect(result.reason, 'rendererFallback');
+    expect(_ranges(result), [(0, 1), (2, 2), (3, 4)]);
+    expect(result.widths, [10, 0, 10]);
+  });
+
+  testWidgets('styled bidi measurements use the isolated logical range', (
+    tester,
+  ) async {
+    final controller = TextAutoWrapController();
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      Directionality(
+        textDirection: TextDirection.ltr,
+        child: Align(
+          alignment: Alignment.topLeft,
+          child: SizedBox(
+            width: 100,
+            child: TextAutoWrap.rich(
+              const TextSpan(
+                children: [
+                  TextSpan(text: 'a '),
+                  TextSpan(
+                    text: 'אב',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  TextSpan(text: ' b'),
+                ],
+              ),
+              style: const TextStyle(fontSize: 10),
+              controller: controller,
+              model: _characterModel([3]),
+              strategy: const LineBreakStrategy(
+                calculator: _OffsetLayoutCalculator([3]),
+                selector: _FirstCalculated(),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final calculated = controller.result!.diagnostics!.calculatedLayouts.single;
+    // The source selection boxes for this range are discontiguous (0–20 and
+    // 30–40). Its isolated styled span is only `a א`, or 30 logical pixels.
+    expect(calculated.widths.first, 30);
+  });
+
+  testWidgets('unsupported span measurement preserves the native baseline', (
+    tester,
+  ) async {
+    final controller = TextAutoWrapController();
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      Directionality(
+        textDirection: TextDirection.ltr,
+        child: Align(
+          alignment: Alignment.topLeft,
+          child: SizedBox(
+            width: 100,
+            child: TextAutoWrap.rich(
+              const _OpaqueTextSpan(text: 'ab'),
+              style: const TextStyle(fontSize: 10),
+              controller: controller,
+              model: _characterModel([1]),
+              strategy: const LineBreakStrategy(
+                calculator: _OffsetLayoutCalculator([1]),
+                selector: _FirstCalculated(),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(controller.result!.reason, 'unsupportedSpanTransformation');
+    expect(_ranges(controller.result!), [(0, 2)]);
+    expect(controller.result!.widths, [20]);
+  });
+
   testWidgets('plain constructor preserves Text layout parameters', (
     tester,
   ) async {
@@ -226,3 +428,74 @@ Widget _controllerText(TextAutoWrapController controller) => Directionality(
     ),
   ),
 );
+
+PhraseModel _characterModel(List<int> offsets) => PhraseModel(
+  levels: [
+    PhraseModelLevel(
+      name: 'preferred',
+      predictor: _Offsets(offsets),
+      penalty: 0,
+    ),
+  ],
+  fallbackPenalty: 100,
+  boundaryMode: BoundaryMode.characters,
+);
+
+Future<TextWrapResult> _pumpFallback(
+  WidgetTester tester,
+  String text, {
+  TextWrapModel? model,
+  LineBreakStrategy strategy = const LineBreakStrategy(
+    calculator: _ThrowingCalculator(),
+  ),
+}) async {
+  final controller = TextAutoWrapController();
+  addTearDown(controller.dispose);
+  await tester.pumpWidget(
+    Directionality(
+      textDirection: TextDirection.ltr,
+      child: Align(
+        alignment: Alignment.topLeft,
+        child: SizedBox(
+          width: 100,
+          child: TextAutoWrap(
+            text,
+            style: const TextStyle(fontSize: 10),
+            controller: controller,
+            model: model ?? _characterModel(const []),
+            strategy: strategy,
+          ),
+        ),
+      ),
+    ),
+  );
+  return controller.result!;
+}
+
+List<(int, int)> _ranges(TextWrapResult result) => [
+  for (final range in result.ranges) (range.start, range.end),
+];
+
+final class _ThrowingCalculator implements LayoutCalculator {
+  const _ThrowingCalculator();
+
+  @override
+  LayoutCalculationResult calculate({
+    required String text,
+    required List<BreakCandidate> candidates,
+    required double maxWidth,
+    required TextRangeMeasurer measureRange,
+    LineBreakLayout? baseline,
+  }) => throw StateError('strategy failure');
+}
+
+final class _ThrowingPredictor implements BoundaryPredictor {
+  const _ThrowingPredictor();
+
+  @override
+  List<int> predict(String text) => throw StateError('predictor failure');
+}
+
+final class _OpaqueTextSpan extends TextSpan {
+  const _OpaqueTextSpan({super.text});
+}
