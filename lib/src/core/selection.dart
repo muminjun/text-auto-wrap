@@ -58,6 +58,13 @@ final class BalanceStrategy implements LayoutSelector {
   static const _epsilon = 1e-9;
 
   @override
+  bool operator ==(Object other) =>
+      other is BalanceStrategy && other.tolerance == tolerance;
+
+  @override
+  int get hashCode => tolerance.hashCode;
+
+  @override
   LayoutSelectionDecision select(LayoutSelectionContext context) {
     if (!tolerance.isFinite || tolerance < 0 || tolerance > 1) {
       throw const InvalidModelConfigurationException(

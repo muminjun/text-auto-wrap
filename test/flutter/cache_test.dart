@@ -1,3 +1,6 @@
+import 'dart:ui' as ui;
+
+import 'package:flutter/semantics.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:text_auto_wrap/text_auto_wrap.dart';
@@ -47,11 +50,10 @@ void main() {
     tester,
   ) async {
     final predictor = _CountingPredictor();
-    final calculator = _CountingCalculator();
     await tester.pumpWidget(
       _host(
         model: _model(predictor),
-        strategy: _strategy(calculator),
+        strategy: _valueEquivalentStrategy(),
         width: 100,
       ),
     );
@@ -60,16 +62,125 @@ void main() {
     await tester.pumpWidget(
       _host(
         model: _model(predictor),
-        strategy: _strategy(calculator),
+        strategy: _valueEquivalentStrategy(),
         width: 100,
       ),
     );
 
     expect(predictor.calls, 1);
-    expect(calculator.calls, 1);
     expect(render.result!.diagnostics!.cache.planMisses, 1);
     expect(render.result!.diagnostics!.cache.selectionCacheHits, 1);
   });
+
+  testWidgets('a cached selection still lays out after soft wrap is restored', (
+    tester,
+  ) async {
+    final model = offsetModel([3]);
+    final strategy = offsetStrategy([3]);
+    Widget host(bool softWrap) => wrapHost(
+      TextAutoWrap(
+        'abcdef',
+        softWrap: softWrap,
+        model: model,
+        strategy: strategy,
+      ),
+      width: 40,
+    );
+
+    await tester.pumpWidget(host(true));
+    final render = wrapRender(tester);
+    final wrappedHeight = render.size.height;
+    expect(render.effectiveText.toPlainText(), 'abc\ndef');
+
+    await tester.pumpWidget(host(false));
+    expect(render.result!.reason, 'softWrapDisabled');
+    expect(render.size.height, lessThan(wrappedHeight));
+
+    await tester.pumpWidget(host(true));
+    expect(render.result!.diagnostics!.cache.selectionCacheHits, 1);
+    expect(render.effectiveText.toPlainText(), 'abc\ndef');
+    expect(render.size.height, wrappedHeight);
+  });
+
+  testWidgets(
+    'a system font change invalidates all metric-dependent renderer caches',
+    (tester) async {
+      final predictor = _CountingPredictor();
+      final calculator = _CountingCalculator();
+      await tester.pumpWidget(
+        _host(
+          model: _model(predictor),
+          strategy: _strategy(calculator),
+          width: 100,
+        ),
+      );
+      final render = wrapRender(tester);
+      final before = render.result!.diagnostics!.cache;
+      final measurements = calculator.measurements;
+
+      // ignore: invalid_use_of_protected_member
+      render.systemFontsDidChange();
+      await tester.pump();
+
+      final after = render.result!.diagnostics!.cache;
+      expect(after.planMisses, before.planMisses + 1);
+      expect(after.selectionCacheMisses, before.selectionCacheMisses + 1);
+      expect(predictor.calls, 2);
+      expect(calculator.measurements, greaterThan(measurements));
+    },
+  );
+
+  testWidgets(
+    'nested locale and spell-out metadata replace cached effective semantics',
+    (tester) async {
+      final semantics = tester.ensureSemantics();
+      try {
+        const beforeLocale = Locale('en', 'US');
+        const afterLocale = Locale('fr', 'FR');
+        Widget host(Locale locale, bool spellOut) => wrapHost(
+          TextAutoWrap.rich(
+            TextSpan(
+              text: 'abc',
+              children: [
+                TextSpan(text: 'def', locale: locale, spellOut: spellOut),
+              ],
+            ),
+            model: offsetModel([3]),
+            strategy: offsetStrategy([3]),
+          ),
+        );
+
+        await tester.pumpWidget(host(beforeLocale, false));
+        final render = wrapRender(tester);
+        final before = render.result!.diagnostics!.cache;
+
+        await tester.pumpWidget(host(afterLocale, true));
+
+        expect(
+          render.result!.diagnostics!.cache.selectionCacheMisses,
+          before.selectionCacheMisses + 1,
+        );
+        final effectiveMetadata = _textSpanWithText(
+          render.effectiveText,
+          'def',
+        );
+        expect(effectiveMetadata.locale, afterLocale);
+        expect(effectiveMetadata.spellOut, isTrue);
+        final attributes = _semantics(
+          tester,
+        ).expand((data) => data.attributedLabel.attributes).toList();
+        expect(
+          attributes.whereType<ui.LocaleStringAttribute>().map(
+            (value) => value.locale,
+          ),
+          contains(afterLocale),
+        );
+        expect(attributes.whereType<ui.SpellOutStringAttribute>(), isNotEmpty);
+      } finally {
+        semantics.dispose();
+      }
+    },
+  );
 
   testWidgets('render inputs invalidate only the cache layers they affect', (
     tester,
@@ -272,6 +383,38 @@ LineBreakStrategy _strategy(_CountingCalculator calculator) =>
       calculator: calculator,
       selector: const _FirstCalculated(),
     );
+
+LineBreakStrategy _valueEquivalentStrategy() => LineBreakStrategy(
+  aggregator: consensus(minimumModels: 1),
+  calculator: nearbyLayouts(radius: 1),
+  selector: const BalanceStrategy(tolerance: .2),
+);
+
+TextSpan _textSpanWithText(InlineSpan root, String text) {
+  TextSpan? match;
+  root.visitChildren((span) {
+    if (span is TextSpan && span.text == text) match = span;
+    return match == null;
+  });
+  if (match == null) throw StateError('Missing TextSpan with text $text.');
+  return match!;
+}
+
+List<SemanticsData> _semantics(WidgetTester tester) {
+  final data = <SemanticsData>[];
+  void visit(SemanticsNode node) {
+    data.add(node.getSemanticsData());
+    node.visitChildren((child) {
+      visit(child);
+      return true;
+    });
+  }
+
+  visit(
+    tester.binding.renderViews.single.owner!.semanticsOwner!.rootSemanticsNode!,
+  );
+  return data;
+}
 
 final class _CacheCase {
   const _CacheCase({

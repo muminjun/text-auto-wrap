@@ -2,7 +2,7 @@ import 'layout.dart';
 import 'prediction.dart';
 import 'selection.dart';
 
-/// Cumulative plan counters, frozen at the time a result is selected.
+/// Cumulative plan and renderer cache counters, frozen when a result is selected.
 final class TextWrapCacheDiagnostics {
   const TextWrapCacheDiagnostics({
     this.predictionRuns = 0,

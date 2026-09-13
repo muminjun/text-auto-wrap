@@ -43,6 +43,7 @@ class RenderTextAutoWrap extends RenderParagraph {
        _model = model,
        _strategy = strategy,
        _controller = controller,
+       _effectiveTextKey = _InlineSpanCacheKey(sourceText),
        super(
          sourceText,
          textAlign: textAlign,
@@ -70,6 +71,7 @@ class RenderTextAutoWrap extends RenderParagraph {
   _RendererPlanKey? _cachedPlanKey;
   _RendererSelectionKey? _cachedSelectionKey;
   TextWrapResult? _cachedSelection;
+  _InlineSpanCacheKey _effectiveTextKey;
   var _planHits = 0;
   var _planMisses = 0;
   var _selectionCacheHits = 0;
@@ -183,31 +185,31 @@ class RenderTextAutoWrap extends RenderParagraph {
       if (_cachedSelectionKey == selectionKey && cached != null) {
         _selectionCacheHits++;
         _commitSelection(encoded, _withRendererCache(cached));
-        return;
-      }
-      _selectionCacheMisses++;
-      sourcePainter = _painter(_sourceText, placeholders)
-        ..layout(
-          minWidth: constraints.minWidth,
-          maxWidth: _maxLayoutWidth(constraints.maxWidth),
+      } else {
+        _selectionCacheMisses++;
+        sourcePainter = _painter(_sourceText, placeholders)
+          ..layout(
+            minWidth: constraints.minWidth,
+            maxWidth: _maxLayoutWidth(constraints.maxWidth),
+          );
+        nativeLayout = _nativeLayout(
+          sourcePainter,
+          encoded.text,
+          constraints.maxWidth,
         );
-      nativeLayout = _nativeLayout(
-        sourcePainter,
-        encoded.text,
-        constraints.maxWidth,
-      );
-      final result = _planFor(planKey).select(
-        maxWidth: constraints.maxWidth,
-        nativeLayout: nativeLayout,
-        maxLines: maxLines,
-        measureRange: (start, end) =>
-            _measureRange(encoded, start, end, placeholders),
-        measurementCacheKey: measurementKey,
-        diagnostics: true,
-      );
-      _cachedSelectionKey = selectionKey;
-      _cachedSelection = result;
-      _commitSelection(encoded, _withRendererCache(result));
+        final result = _planFor(planKey).select(
+          maxWidth: constraints.maxWidth,
+          nativeLayout: nativeLayout,
+          maxLines: maxLines,
+          measureRange: (start, end) =>
+              _measureRange(encoded, start, end, placeholders),
+          measurementCacheKey: measurementKey,
+          diagnostics: true,
+        );
+        _cachedSelectionKey = selectionKey;
+        _cachedSelection = result;
+        _commitSelection(encoded, _withRendererCache(result));
+      }
     } catch (error) {
       // Rendering valid content wins over a semantic-layout attempt. This also
       // covers invalid custom predictions, unavailable measurements, and span
@@ -220,6 +222,18 @@ class RenderTextAutoWrap extends RenderParagraph {
       sourcePainter?.dispose();
     }
     super.performLayout();
+  }
+
+  @override
+  void systemFontsDidChange() {
+    super.systemFontsDidChange();
+    // A plan owns shaped range widths, and a cached selection owns the
+    // resulting native geometry. Neither remains valid after font metrics
+    // change, even when every public render input is unchanged.
+    _cachedPlan = null;
+    _cachedPlanKey = null;
+    _cachedSelection = null;
+    _cachedSelectionKey = null;
   }
 
   @override
@@ -470,15 +484,24 @@ class RenderTextAutoWrap extends RenderParagraph {
   }
 
   void _setEffectiveText(InlineSpan value) {
-    if (super.text.compareTo(value) == RenderComparison.identical) return;
+    final key = _InlineSpanCacheKey(value);
+    if (_effectiveTextKey == key) return;
     // RenderParagraph's public setter correctly resets its private painter,
     // semantics, overflow, and selection caches. Flutter permits this
     // synchronous render-tree mutation through the documented layout callback;
     // the object is already dirty, and the final super.performLayout below
     // consumes the updated painter before this frame can paint it.
     invokeLayoutCallback<BoxConstraints>((_) {
+      // TextSpan.compareTo deliberately omits locale and spellOut, although
+      // both affect emitted accessibility metadata (and locale can affect
+      // shaping). Force the superclass setter to accept an otherwise
+      // comparison-identical replacement before installing the new tree.
+      if (super.text.compareTo(value) == RenderComparison.identical) {
+        super.text = _metadataResetSpan(super.text);
+      }
       super.text = value;
     });
+    _effectiveTextKey = key;
   }
 
   void _commitFallback({
@@ -585,8 +608,8 @@ int _strategyHash(LineBreakStrategy strategy) =>
     Object.hash(strategy.aggregator, strategy.calculator, strategy.selector);
 
 final class _RendererMeasurementKey {
-  const _RendererMeasurementKey({
-    required this.source,
+  _RendererMeasurementKey({
+    required InlineSpan source,
     required this.maxWidth,
     required this.textDirection,
     required this.textScaler,
@@ -595,9 +618,9 @@ final class _RendererMeasurementKey {
     required this.textWidthBasis,
     required this.textHeightBehavior,
     required this.placeholders,
-  });
+  }) : source = _InlineSpanCacheKey(source);
 
-  final InlineSpan source;
+  final _InlineSpanCacheKey source;
   final double maxWidth;
   final TextDirection textDirection;
   final TextScaler textScaler;
@@ -632,6 +655,64 @@ final class _RendererMeasurementKey {
     textHeightBehavior,
     placeholders,
   );
+}
+
+/// Full span-tree equality for cache and committed-text decisions.
+///
+/// Flutter's [TextSpan] equality and [TextSpan.compareTo] intentionally omit
+/// locale and spellOut. They are nevertheless part of this renderer's shaped
+/// text and semantics contract, including when inherited by nested spans.
+final class _InlineSpanCacheKey {
+  const _InlineSpanCacheKey(this.span);
+
+  final InlineSpan span;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _InlineSpanCacheKey && _sameInlineSpan(span, other.span);
+
+  @override
+  int get hashCode => _inlineSpanHash(span);
+}
+
+bool _sameInlineSpan(InlineSpan left, InlineSpan right) {
+  if (identical(left, right)) return true;
+  if (left.runtimeType != right.runtimeType || left != right) return false;
+  if (left is! TextSpan || right is! TextSpan) return true;
+  if (left.locale != right.locale || left.spellOut != right.spellOut) {
+    return false;
+  }
+  final leftChildren = left.children ?? const <InlineSpan>[];
+  final rightChildren = right.children ?? const <InlineSpan>[];
+  if (leftChildren.length != rightChildren.length) return false;
+  for (var index = 0; index < leftChildren.length; index++) {
+    if (!_sameInlineSpan(leftChildren[index], rightChildren[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+int _inlineSpanHash(InlineSpan span) {
+  if (span is! TextSpan) return Object.hash(span.runtimeType, span);
+  return Object.hash(
+    span.runtimeType,
+    span,
+    span.locale,
+    span.spellOut,
+    Object.hashAll([
+      for (final child in span.children ?? const <InlineSpan>[])
+        _inlineSpanHash(child),
+    ]),
+  );
+}
+
+InlineSpan _metadataResetSpan(InlineSpan current) {
+  const first = TextSpan(text: '\u0000');
+  const second = TextSpan(text: '\u0001');
+  return current.compareTo(first) == RenderComparison.identical
+      ? second
+      : first;
 }
 
 final class _RendererSelectionKey {

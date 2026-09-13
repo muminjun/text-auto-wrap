@@ -219,6 +219,13 @@ final class _Calculator implements LayoutCalculator {
   final int radius;
 
   @override
+  bool operator ==(Object other) =>
+      other is _Calculator && other.mode == mode && other.radius == radius;
+
+  @override
+  int get hashCode => Object.hash(mode, radius);
+
+  @override
   LayoutCalculationResult calculate({
     required String text,
     required List<BreakCandidate> candidates,

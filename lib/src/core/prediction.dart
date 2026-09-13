@@ -106,6 +106,13 @@ final class CandidateAggregator implements PredictionAggregator {
 
   final int _minimumModels;
 
+  @override
+  bool operator ==(Object other) =>
+      other is CandidateAggregator && other._minimumModels == _minimumModels;
+
+  @override
+  int get hashCode => _minimumModels.hashCode;
+
   /// Evaluates each model level and returns an immutable diagnostic snapshot.
   @override
   PredictionSnapshot aggregate(
