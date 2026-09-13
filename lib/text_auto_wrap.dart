@@ -17,5 +17,7 @@ export 'src/core/plan.dart';
 export 'src/core/select_text_wrap.dart';
 export 'src/models/budoux_parser.dart';
 export 'src/models/language_detection.dart';
+export 'src/flutter/controller.dart';
+export 'src/flutter/text_auto_wrap.dart';
 
 const String textAutoWrapVersion = '0.1.0';
