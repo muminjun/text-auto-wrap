@@ -13,6 +13,10 @@ final class TextWrapCacheDiagnostics {
     this.selectionRuns = 0,
     this.measurementRuns = 0,
     this.measurementHits = 0,
+    this.planHits = 0,
+    this.planMisses = 0,
+    this.selectionCacheHits = 0,
+    this.selectionCacheMisses = 0,
   });
   final int predictionRuns;
   final int predictionHits;
@@ -22,6 +26,34 @@ final class TextWrapCacheDiagnostics {
   final int selectionRuns;
   final int measurementRuns;
   final int measurementHits;
+
+  /// Renderer-level immutable plan cache activity.
+  final int planHits;
+  final int planMisses;
+
+  /// Renderer-level final-selection cache activity.
+  final int selectionCacheHits;
+  final int selectionCacheMisses;
+
+  TextWrapCacheDiagnostics copyWith({
+    int? planHits,
+    int? planMisses,
+    int? selectionCacheHits,
+    int? selectionCacheMisses,
+  }) => TextWrapCacheDiagnostics(
+    predictionRuns: predictionRuns,
+    predictionHits: predictionHits,
+    aggregationRuns: aggregationRuns,
+    aggregationHits: aggregationHits,
+    calculationRuns: calculationRuns,
+    selectionRuns: selectionRuns,
+    measurementRuns: measurementRuns,
+    measurementHits: measurementHits,
+    planHits: planHits ?? this.planHits,
+    planMisses: planMisses ?? this.planMisses,
+    selectionCacheHits: selectionCacheHits ?? this.selectionCacheHits,
+    selectionCacheMisses: selectionCacheMisses ?? this.selectionCacheMisses,
+  );
 }
 
 /// Immutable snapshots from every stage, including fallback and cache evidence.

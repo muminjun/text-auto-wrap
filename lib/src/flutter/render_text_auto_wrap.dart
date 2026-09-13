@@ -7,7 +7,7 @@ import '../core/diagnostics.dart';
 import '../core/exceptions.dart';
 import '../core/layout.dart';
 import '../core/models.dart';
-import '../core/select_text_wrap.dart';
+import '../core/plan.dart';
 import '../core/strategy.dart';
 import '../models/language_detection.dart';
 import 'controller.dart';
@@ -66,6 +66,14 @@ class RenderTextAutoWrap extends RenderParagraph {
   LineBreakStrategy _strategy;
   TextAutoWrapController? _controller;
   TextWrapResult? _lastResult;
+  TextWrapPlan? _cachedPlan;
+  _RendererPlanKey? _cachedPlanKey;
+  _RendererSelectionKey? _cachedSelectionKey;
+  TextWrapResult? _cachedSelection;
+  var _planHits = 0;
+  var _planMisses = 0;
+  var _selectionCacheHits = 0;
+  var _selectionCacheMisses = 0;
 
   /// The unmodified span supplied by the widget.
   InlineSpan get sourceText => _sourceText;
@@ -145,6 +153,39 @@ class RenderTextAutoWrap extends RenderParagraph {
         );
         rethrow;
       }
+      final model = _resolvedModel(encoded.text);
+      final planKey = _RendererPlanKey(
+        text: encoded.text,
+        model: model,
+        strategy: _strategy,
+      );
+      final measurementKey = _RendererMeasurementKey(
+        source: _sourceText,
+        maxWidth: constraints.maxWidth,
+        textDirection: textDirection,
+        textScaler: textScaler,
+        locale: locale,
+        strutStyle: strutStyle,
+        textWidthBasis: textWidthBasis,
+        textHeightBehavior: textHeightBehavior,
+        placeholders: _PlaceholderCacheKey(placeholders),
+      );
+      final selectionKey = _RendererSelectionKey(
+        plan: planKey,
+        measurement: measurementKey,
+        minWidth: constraints.minWidth,
+        textAlign: textAlign,
+        softWrap: softWrap,
+        overflow: overflow,
+        maxLines: maxLines,
+      );
+      final cached = _cachedSelection;
+      if (_cachedSelectionKey == selectionKey && cached != null) {
+        _selectionCacheHits++;
+        _commitSelection(encoded, _withRendererCache(cached));
+        return;
+      }
+      _selectionCacheMisses++;
       sourcePainter = _painter(_sourceText, placeholders)
         ..layout(
           minWidth: constraints.minWidth,
@@ -155,25 +196,18 @@ class RenderTextAutoWrap extends RenderParagraph {
         encoded.text,
         constraints.maxWidth,
       );
-      final model = _resolvedModel(encoded.text);
-      final result = selectTextWrap(
-        TextWrapInput(
-          text: encoded.text,
-          model: model,
-          maxWidth: constraints.maxWidth,
-          nativeLayout: nativeLayout,
-          maxLines: maxLines,
-          measureRange: (start, end) =>
-              _measureRange(encoded, start, end, placeholders),
-        ),
-        strategy: _strategy,
+      final result = _planFor(planKey).select(
+        maxWidth: constraints.maxWidth,
+        nativeLayout: nativeLayout,
+        maxLines: maxLines,
+        measureRange: (start, end) =>
+            _measureRange(encoded, start, end, placeholders),
+        measurementCacheKey: measurementKey,
         diagnostics: true,
       );
-      final effective = result.applied
-          ? insertLineBreaks(encoded, result.breakOffsets)
-          : _sourceText;
-      _setEffectiveText(effective);
-      _commit(result);
+      _cachedSelectionKey = selectionKey;
+      _cachedSelection = result;
+      _commitSelection(encoded, _withRendererCache(result));
     } catch (error) {
       // Rendering valid content wins over a semantic-layout attempt. This also
       // covers invalid custom predictions, unavailable measurements, and span
@@ -385,6 +419,56 @@ class RenderTextAutoWrap extends RenderParagraph {
       ? maxWidth
       : double.infinity;
 
+  TextWrapPlan _planFor(_RendererPlanKey key) {
+    final plan = _cachedPlan;
+    if (_cachedPlanKey == key && plan != null) {
+      _planHits++;
+      return plan;
+    }
+    _planMisses++;
+    final created = createTextWrapPlan(
+      text: key.text,
+      model: key.model,
+      strategy: key.strategy,
+    );
+    _cachedPlanKey = key;
+    _cachedPlan = created;
+    return created;
+  }
+
+  void _commitSelection(EncodedInlineSpan encoded, TextWrapResult result) {
+    final effective = result.applied
+        ? insertLineBreaks(encoded, result.breakOffsets)
+        : _sourceText;
+    _setEffectiveText(effective);
+    _commit(result);
+  }
+
+  TextWrapResult _withRendererCache(TextWrapResult result) {
+    final diagnostics = result.diagnostics;
+    if (diagnostics == null) return result;
+    return TextWrapResult(
+      layout: result.layout,
+      applied: result.applied,
+      reason: result.reason,
+      source: result.source,
+      diagnostics: TextWrapDiagnostics(
+        predictions: diagnostics.predictions,
+        candidates: diagnostics.candidates,
+        calculatedLayouts: diagnostics.calculatedLayouts,
+        nativeLayout: diagnostics.nativeLayout,
+        selection: diagnostics.selection,
+        calculationLimit: diagnostics.calculationLimit,
+        cache: diagnostics.cache.copyWith(
+          planHits: _planHits,
+          planMisses: _planMisses,
+          selectionCacheHits: _selectionCacheHits,
+          selectionCacheMisses: _selectionCacheMisses,
+        ),
+      ),
+    );
+  }
+
   void _setEffectiveText(InlineSpan value) {
     if (super.text.compareTo(value) == RenderComparison.identical) return;
     // RenderParagraph's public setter correctly resets its private painter,
@@ -434,6 +518,192 @@ String _fallbackReason(Object error) => switch (error) {
 
 final class _UnmeasurablePlaceholder implements Exception {
   const _UnmeasurablePlaceholder();
+}
+
+final class _RendererPlanKey {
+  const _RendererPlanKey({
+    required this.text,
+    required this.model,
+    required this.strategy,
+  });
+
+  final String text;
+  final PhraseModel? model;
+  final LineBreakStrategy strategy;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _RendererPlanKey &&
+      text == other.text &&
+      _sameModel(model, other.model) &&
+      _sameStrategy(strategy, other.strategy);
+
+  @override
+  int get hashCode =>
+      Object.hash(text, _modelHash(model), _strategyHash(strategy));
+}
+
+bool _sameModel(PhraseModel? left, PhraseModel? right) {
+  if (identical(left, right)) return true;
+  if (left == null ||
+      right == null ||
+      left.boundaryMode != right.boundaryMode ||
+      left.fallbackPenalty != right.fallbackPenalty ||
+      left.levels.length != right.levels.length) {
+    return false;
+  }
+  for (var index = 0; index < left.levels.length; index++) {
+    final leftLevel = left.levels[index];
+    final rightLevel = right.levels[index];
+    if (leftLevel.name != rightLevel.name ||
+        leftLevel.penalty != rightLevel.penalty ||
+        leftLevel.predictor != rightLevel.predictor) {
+      return false;
+    }
+  }
+  return true;
+}
+
+int _modelHash(PhraseModel? model) => model == null
+    ? 0
+    : Object.hash(
+        model.boundaryMode,
+        model.fallbackPenalty,
+        Object.hashAll([
+          for (final level in model.levels)
+            (level.name, level.penalty, level.predictor),
+        ]),
+      );
+
+bool _sameStrategy(LineBreakStrategy left, LineBreakStrategy right) =>
+    identical(left, right) ||
+    (left.aggregator == right.aggregator &&
+        left.calculator == right.calculator &&
+        left.selector == right.selector);
+
+int _strategyHash(LineBreakStrategy strategy) =>
+    Object.hash(strategy.aggregator, strategy.calculator, strategy.selector);
+
+final class _RendererMeasurementKey {
+  const _RendererMeasurementKey({
+    required this.source,
+    required this.maxWidth,
+    required this.textDirection,
+    required this.textScaler,
+    required this.locale,
+    required this.strutStyle,
+    required this.textWidthBasis,
+    required this.textHeightBehavior,
+    required this.placeholders,
+  });
+
+  final InlineSpan source;
+  final double maxWidth;
+  final TextDirection textDirection;
+  final TextScaler textScaler;
+  final Locale? locale;
+  final StrutStyle? strutStyle;
+  final TextWidthBasis textWidthBasis;
+  final TextHeightBehavior? textHeightBehavior;
+  final _PlaceholderCacheKey placeholders;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _RendererMeasurementKey &&
+      source == other.source &&
+      maxWidth == other.maxWidth &&
+      textDirection == other.textDirection &&
+      textScaler == other.textScaler &&
+      locale == other.locale &&
+      strutStyle == other.strutStyle &&
+      textWidthBasis == other.textWidthBasis &&
+      textHeightBehavior == other.textHeightBehavior &&
+      placeholders == other.placeholders;
+
+  @override
+  int get hashCode => Object.hash(
+    source,
+    maxWidth,
+    textDirection,
+    textScaler,
+    locale,
+    strutStyle,
+    textWidthBasis,
+    textHeightBehavior,
+    placeholders,
+  );
+}
+
+final class _RendererSelectionKey {
+  const _RendererSelectionKey({
+    required this.plan,
+    required this.measurement,
+    required this.minWidth,
+    required this.textAlign,
+    required this.softWrap,
+    required this.overflow,
+    required this.maxLines,
+  });
+
+  final _RendererPlanKey plan;
+  final _RendererMeasurementKey measurement;
+  final double minWidth;
+  final TextAlign textAlign;
+  final bool softWrap;
+  final TextOverflow overflow;
+  final int? maxLines;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _RendererSelectionKey &&
+      plan == other.plan &&
+      measurement == other.measurement &&
+      minWidth == other.minWidth &&
+      textAlign == other.textAlign &&
+      softWrap == other.softWrap &&
+      overflow == other.overflow &&
+      maxLines == other.maxLines;
+
+  @override
+  int get hashCode => Object.hash(
+    plan,
+    measurement,
+    minWidth,
+    textAlign,
+    softWrap,
+    overflow,
+    maxLines,
+  );
+}
+
+final class _PlaceholderCacheKey {
+  _PlaceholderCacheKey(List<PlaceholderDimensions> dimensions)
+    : dimensions = List.unmodifiable([
+        for (final dimension in dimensions)
+          (
+            dimension.size,
+            dimension.alignment,
+            dimension.baseline,
+            dimension.baselineOffset,
+          ),
+      ]);
+
+  final List<(Size, PlaceholderAlignment, TextBaseline?, double?)> dimensions;
+
+  @override
+  bool operator ==(Object other) {
+    if (other is! _PlaceholderCacheKey ||
+        dimensions.length != other.dimensions.length) {
+      return false;
+    }
+    for (var index = 0; index < dimensions.length; index++) {
+      if (dimensions[index] != other.dimensions[index]) return false;
+    }
+    return true;
+  }
+
+  @override
+  int get hashCode => Object.hashAll(dimensions);
 }
 
 int? _hardBreakStart(String source, int lineStart, int lineEnd) {
