@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  release-validation:
+    name: Release validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.4
+          channel: stable
+          cache: true
+      - name: Get dependencies
+        run: flutter pub get
+      - name: Check formatting
+        run: dart format --output=none --set-exit-if-changed lib test benchmark example
+      - name: Analyze
+        run: flutter analyze
+      - name: Run tests with coverage
+        run: flutter test --coverage
+      - name: Build example for web
+        working-directory: example
+        run: flutter build web
+      - name: Install pana
+        run: dart pub global activate pana
+      - name: Score package
+        run: pana --no-warning
+      - name: Validate package archive
+        run: flutter pub publish --dry-run
+
+  platform-tests:
+    name: Test (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS / Flutter 3.47.4
+            os: macos-latest
+            flutter: 3.47.4
+          - name: Windows / Flutter 3.47.4
+            os: windows-latest
+            flutter: 3.47.4
+          - name: Linux / minimum Flutter 3.38.0
+            os: ubuntu-latest
+            flutter: 3.38.0
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ matrix.flutter }}
+          channel: stable
+          cache: true
+      - name: Get dependencies
+        run: flutter pub get
+      - name: Run tests
+        run: flutter test
