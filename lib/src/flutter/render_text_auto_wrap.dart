@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 
@@ -43,6 +44,7 @@ class RenderTextAutoWrap extends RenderParagraph {
        _model = model,
        _strategy = strategy,
        _controller = controller,
+       _devicePixelRatio = devicePixelRatio,
        _effectiveTextKey = _InlineSpanCacheKey(sourceText),
        super(
          sourceText,
@@ -59,7 +61,6 @@ class RenderTextAutoWrap extends RenderParagraph {
          children: children,
          selectionColor: selectionColor,
          registrar: registrar,
-         devicePixelRatio: devicePixelRatio,
        );
 
   InlineSpan _sourceText;
@@ -72,10 +73,21 @@ class RenderTextAutoWrap extends RenderParagraph {
   _RendererSelectionKey? _cachedSelectionKey;
   TextWrapResult? _cachedSelection;
   _InlineSpanCacheKey _effectiveTextKey;
+  double _devicePixelRatio;
   var _planHits = 0;
   var _planMisses = 0;
   var _selectionCacheHits = 0;
   var _selectionCacheMisses = 0;
+
+  // ignore: annotate_overrides
+  double get devicePixelRatio => _devicePixelRatio;
+
+  // ignore: annotate_overrides
+  set devicePixelRatio(double value) {
+    if (_devicePixelRatio == value) return;
+    _devicePixelRatio = value;
+    if (kIsWeb) markNeedsPaint();
+  }
 
   /// The unmodified span supplied by the widget.
   InlineSpan get sourceText => _sourceText;

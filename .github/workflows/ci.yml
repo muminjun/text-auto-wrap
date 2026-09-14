@@ -48,9 +48,9 @@ jobs:
           - name: Windows / Flutter 3.47.4
             os: windows-latest
             flutter: 3.47.4
-          - name: Linux / minimum Flutter 3.38.0
+          - name: Linux / minimum Flutter 3.38.1
             os: ubuntu-latest
-            flutter: 3.38.0
+            flutter: 3.38.1
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

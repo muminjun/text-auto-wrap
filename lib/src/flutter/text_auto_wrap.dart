@@ -101,12 +101,11 @@ class TextAutoWrap extends StatelessWidget {
         const TextStyle(fontWeight: FontWeight.bold),
       );
     }
-    final lineHeightScale = MediaQuery.maybeLineHeightScaleFactorOverrideOf(
-      context,
-    );
-    final effectiveStrut = strutStyle?.merge(
-      StrutStyle(height: lineHeightScale),
-    );
+    final lineHeightScale = _maybeLineHeightScaleFactorOverrideOf(context);
+    final effectiveStrut = switch (strutStyle) {
+      final style? => _copyStrutStyleWithHeight(style, lineHeightScale),
+      null => null,
+    };
     final effectiveScaler = textScaler ?? MediaQuery.textScalerOf(context);
     final effectiveSpan = TextSpan(
       style: effectiveStyle,
@@ -159,6 +158,30 @@ class TextAutoWrap extends StatelessWidget {
     return result;
   }
 }
+
+double? _maybeLineHeightScaleFactorOverrideOf(BuildContext context) {
+  final data = MediaQuery.maybeOf(context);
+  if (data == null) return null;
+  try {
+    return (data as dynamic).lineHeightScaleFactorOverride as double?;
+  } on NoSuchMethodError {
+    return null;
+  }
+}
+
+StrutStyle _copyStrutStyleWithHeight(StrutStyle style, double? height) =>
+    StrutStyle(
+      fontFamily: style.fontFamily,
+      fontFamilyFallback: style.fontFamilyFallback,
+      fontSize: style.fontSize,
+      height: height ?? style.height,
+      leadingDistribution: style.leadingDistribution,
+      leading: style.leading,
+      fontWeight: style.fontWeight,
+      fontStyle: style.fontStyle,
+      forceStrutHeight: style.forceStrutHeight,
+      debugLabel: style.debugLabel,
+    );
 
 /// The direct RenderParagraph bridge; mirrors Flutter 3.47.4 [RichText].
 final class _TextAutoWrapParagraph extends MultiChildRenderObjectWidget {
