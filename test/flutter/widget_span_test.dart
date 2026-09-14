@@ -1,6 +1,7 @@
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:text_auto_wrap/src/flutter/render_text_auto_wrap.dart';
 import 'package:text_auto_wrap/text_auto_wrap.dart';
 
 import '../support/flutter_wrap.dart';

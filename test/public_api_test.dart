@@ -87,7 +87,6 @@ void main() {
       expect(result.diagnostics, isA<TextWrapDiagnostics>());
       expect(oneShot, isA<TextWrapResult>());
       expect(diagnostics.selection.source, TextWrapSelectionSource.native);
-      expect(RenderTextAutoWrap, isA<Type>());
       expect(
         detectTextWrapLanguage('한국어', null).selectedModel,
         same(TextAutoWrapModels.korean),
