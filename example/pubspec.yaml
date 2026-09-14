@@ -1,0 +1,21 @@
+name: text_auto_wrap_example
+description: Responsive examples for the text_auto_wrap package.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.10.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  text_auto_wrap:
+    path: ..
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
