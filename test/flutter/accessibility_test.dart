@@ -224,13 +224,13 @@ void main() {
       tester,
     ) async {
       const source = 'אבג abc דהו';
-      const expected = 'אבג abc \nדהו';
+      const expected = 'אבג ab\nc דהו';
       await tester.pumpWidget(
         wrapHost(
           TextAutoWrap(
             source,
-            model: offsetModel([8]),
-            strategy: offsetStrategy([8]),
+            model: offsetModel([6]),
+            strategy: offsetStrategy([6]),
           ),
           direction: direction,
           width: 200,

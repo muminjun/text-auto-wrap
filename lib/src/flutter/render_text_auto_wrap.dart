@@ -1,5 +1,3 @@
-import 'dart:math' as math;
-
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
@@ -9,6 +7,7 @@ import '../core/exceptions.dart';
 import '../core/layout.dart';
 import '../core/models.dart';
 import '../core/plan.dart';
+import '../core/selection.dart';
 import '../core/strategy.dart';
 import '../models/language_detection.dart';
 import 'controller.dart';
@@ -17,9 +16,9 @@ import 'span_codec.dart';
 /// A [RenderParagraph] that chooses semantic line breaks before final layout.
 ///
 /// The inherited paragraph remains responsible for final positioning, paint,
-/// hit testing, selection, and semantics. This adapter only replaces its span
-/// while it is already dirty in [performLayout], so no intermediate paragraph
-/// can be painted.
+/// hit testing, selection, and semantics. This adapter restores source text
+/// when inputs change and commits the selected span during [performLayout],
+/// before any intermediate paragraph can be painted.
 class RenderTextAutoWrap extends RenderParagraph {
   RenderTextAutoWrap({
     required InlineSpan sourceText,
@@ -103,6 +102,9 @@ class RenderTextAutoWrap extends RenderParagraph {
   set sourceText(InlineSpan value) {
     if (identical(_sourceText, value)) return;
     _sourceText = value;
+    // Parents can request intrinsic/dry sizes before performLayout. Restore
+    // the current source in Flutter's painters before they choose constraints.
+    _replaceParagraphText(value);
     markNeedsLayout();
   }
 
@@ -196,7 +198,7 @@ class RenderTextAutoWrap extends RenderParagraph {
       final cached = _cachedSelection;
       if (_cachedSelectionKey == selectionKey && cached != null) {
         _selectionCacheHits++;
-        _commitSelection(encoded, _withRendererCache(cached));
+        _commitSelection(encoded, _withRendererCache(cached), placeholders);
       } else {
         _selectionCacheMisses++;
         sourcePainter = _painter(_sourceText, placeholders)
@@ -220,7 +222,7 @@ class RenderTextAutoWrap extends RenderParagraph {
         );
         _cachedSelectionKey = selectionKey;
         _cachedSelection = result;
-        _commitSelection(encoded, _withRendererCache(result));
+        _commitSelection(encoded, _withRendererCache(result), placeholders);
       }
     } catch (error) {
       // Rendering valid content wins over a semantic-layout attempt. This also
@@ -462,12 +464,95 @@ class RenderTextAutoWrap extends RenderParagraph {
     return created;
   }
 
-  void _commitSelection(EncodedInlineSpan encoded, TextWrapResult result) {
+  void _commitSelection(
+    EncodedInlineSpan encoded,
+    TextWrapResult result,
+    List<PlaceholderDimensions> placeholders,
+  ) {
     final effective = result.applied
         ? insertLineBreaks(encoded, result.breakOffsets)
         : _sourceText;
+    var matches = true;
+    if (result.applied) {
+      // Range measurement trims boundary whitespace, but the source-preserving
+      // transformation retains it. Shaping that effective paragraph can create
+      // extra lines or retain whitespace absent from selected source ranges.
+      // Validate both source coverage and geometry before committing it.
+      final painter = _painter(effective, placeholders, finalLayout: false);
+      try {
+        painter.layout(
+          minWidth: constraints.minWidth,
+          maxWidth: _maxLayoutWidth(constraints.maxWidth),
+        );
+        final lines = painter.computeLineMetrics();
+        matches =
+            _matchesSelectedLines(effective, result) &&
+            lines.length == result.lineCount &&
+            !List.generate(lines.length, (index) => index).any(
+              (index) =>
+                  (lines[index].width - result.widths[index]).abs() > 0.001,
+            );
+      } finally {
+        painter.dispose();
+      }
+    } else if (result.source == TextWrapSelectionSource.calculated) {
+      // A calculated selection may reuse native offsets without inserting any
+      // breaks. Its trimmed ranges must still match the native text we paint.
+      final native = result.diagnostics?.nativeLayout ?? _fallbackLayout();
+      matches = native.lineCount == result.lineCount;
+      for (var index = 0; matches && index < native.lineCount; index++) {
+        matches =
+            native.ranges[index].start == result.ranges[index].start &&
+            native.ranges[index].end == result.ranges[index].end &&
+            native.lines[index] == result.lines[index] &&
+            (native.widths[index] - result.widths[index]).abs() <= 0.001;
+      }
+    }
+    if (!matches) {
+      _commitFallback(
+        reason: 'invalidRuntimeMeasurement',
+        nativeLayout: result.diagnostics?.nativeLayout,
+        diagnostics: result.diagnostics,
+      );
+      return;
+    }
     _setEffectiveText(effective);
     _commit(result);
+  }
+
+  bool _matchesSelectedLines(InlineSpan effective, TextWrapResult result) {
+    final text = effective.toPlainText(includeSemanticsLabels: false);
+    var inserted = 0;
+    int sourceOffset(int effectiveOffset) {
+      while (inserted < result.breakOffsets.length &&
+          result.breakOffsets[inserted] + inserted < effectiveOffset) {
+        inserted++;
+      }
+      return effectiveOffset - inserted;
+    }
+
+    // Each calculated line has an explicit separator in the effective tree.
+    // Include trailing whitespace even when TextPainter's boundaries omit it.
+    // The separate painted-line count check rejects extra native soft wraps.
+    var line = 0;
+    var start = 0;
+    for (var end = 0; end <= text.length; end++) {
+      if (end != text.length && !_isNewline(text.codeUnitAt(end))) continue;
+      if (line >= result.lineCount) return false;
+      final range = result.ranges[line];
+      final sourceStart = sourceOffset(start);
+      final sourceEnd = sourceOffset(end);
+      if (sourceStart != range.start ||
+          sourceEnd != range.end ||
+          text.substring(start, end) != result.lines[line]) {
+        return false;
+      }
+      line++;
+      if (end == text.length) break;
+      start = _nextLineStart(text, end);
+      end = start - 1;
+    }
+    return line == result.lineCount;
   }
 
   TextWrapResult _withRendererCache(TextWrapResult result) {
@@ -504,38 +589,73 @@ class RenderTextAutoWrap extends RenderParagraph {
     // the object is already dirty, and the final super.performLayout below
     // consumes the updated painter before this frame can paint it.
     invokeLayoutCallback<BoxConstraints>((_) {
-      // TextSpan.compareTo deliberately omits locale and spellOut, although
-      // both affect emitted accessibility metadata (and locale can affect
-      // shaping). Force the superclass setter to accept an otherwise
-      // comparison-identical replacement before installing the new tree.
-      if (super.text.compareTo(value) == RenderComparison.identical) {
-        super.text = _metadataResetSpan(super.text);
-      }
-      super.text = value;
+      _replaceParagraphText(value);
     });
+  }
+
+  void _replaceParagraphText(InlineSpan value) {
+    final key = _InlineSpanCacheKey(value);
+    if (_effectiveTextKey == key) return;
+    // TextSpan.compareTo omits locale/spellOut, which affect semantics and
+    // shaping. Force an otherwise comparison-identical replacement through.
+    if (super.text.compareTo(value) == RenderComparison.identical) {
+      super.text = _metadataResetSpan(super.text);
+    }
+    super.text = value;
     _effectiveTextKey = key;
   }
 
   void _commitFallback({
     required String reason,
     LineBreakLayout? nativeLayout,
+    TextWrapDiagnostics? diagnostics,
   }) {
     _setEffectiveText(_sourceText);
     final layout = nativeLayout ?? _fallbackLayout();
-    _commit(TextWrapResult.native(layout, reason: reason));
+    _commit(
+      TextWrapResult(
+        layout: layout,
+        applied: false,
+        reason: reason,
+        source: TextWrapSelectionSource.native,
+        diagnostics: diagnostics == null
+            ? null
+            : TextWrapDiagnostics(
+                predictions: diagnostics.predictions,
+                candidates: diagnostics.candidates,
+                calculatedLayouts: diagnostics.calculatedLayouts,
+                nativeLayout: layout,
+                selection: LayoutSelectionDecision.native(reason: reason),
+                cache: diagnostics.cache,
+                calculationLimit: diagnostics.calculationLimit,
+              ),
+      ),
+    );
   }
 
   LineBreakLayout _fallbackLayout() {
     final source = encodeInlineSpan(_sourceText).text;
-    final width = constraints.hasBoundedWidth && constraints.maxWidth.isFinite
-        ? math.max(0.0, constraints.maxWidth).toDouble()
-        : 0.0;
-    return LineBreakLayout(
-      sourceText: source,
-      ranges: [TextLineRange(0, source.length)],
-      widths: const [0],
-      maxWidth: width,
+    // Semantic placeholder validation is intentionally stricter than Flutter's
+    // native path (for example, native layout permits a missing real baseline).
+    final placeholders = super.layoutInlineChildren(
+      constraints.maxWidth,
+      ChildLayoutHelper.layoutChild,
+      ChildLayoutHelper.getBaseline,
     );
+    final painter = _painter(_sourceText, placeholders);
+    try {
+      painter.layout(
+        minWidth: constraints.minWidth,
+        maxWidth: _maxLayoutWidth(constraints.maxWidth),
+      );
+      return _nativeLayout(
+        painter,
+        source,
+        constraints.maxWidth.isFinite ? constraints.maxWidth : painter.width,
+      );
+    } finally {
+      painter.dispose();
+    }
   }
 
   void _commit(TextWrapResult result) {
@@ -547,7 +667,7 @@ class RenderTextAutoWrap extends RenderParagraph {
 String _fallbackReason(Object error) => switch (error) {
   _UnmeasurablePlaceholder() => 'unmeasurablePlaceholder',
   UnsupportedSpanTransformationException() => 'unsupportedSpanTransformation',
-  TextRangeMeasurementException() => 'invalidMeasurement',
+  TextRangeMeasurementException() => 'invalidRuntimeMeasurement',
   _ => 'rendererFallback',
 };
 

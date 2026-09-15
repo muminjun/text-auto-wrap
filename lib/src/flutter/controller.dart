@@ -9,7 +9,7 @@ import '../core/prediction.dart';
 ///
 /// The value is assigned synchronously so layout clients can inspect it right
 /// away. Listener notification is deferred to the end of the frame to avoid a
-/// reentrant build while a [RenderTextAutoWrap] is laying out.
+/// reentrant build while the internal `RenderTextAutoWrap` is laying out.
 final class TextAutoWrapController extends ChangeNotifier {
   TextWrapResult? _result;
   Object? _owner;

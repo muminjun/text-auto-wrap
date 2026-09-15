@@ -107,11 +107,18 @@ class TextAutoWrap extends StatelessWidget {
       null => null,
     };
     final effectiveScaler = textScaler ?? MediaQuery.textScalerOf(context);
-    final effectiveSpan = TextSpan(
-      style: effectiveStyle,
-      text: data,
-      locale: locale,
-      children: textSpan == null ? null : <InlineSpan>[textSpan!],
+    final effectiveSpan = _applySpacingOverrides(
+      TextSpan(
+        style: effectiveStyle,
+        text: data,
+        locale: locale,
+        children: textSpan == null ? null : <InlineSpan>[textSpan!],
+      ),
+      TextStyle(
+        height: lineHeightScale,
+        letterSpacing: _maybeSpacingOverrideOf(context, letterSpacing: true),
+        wordSpacing: _maybeSpacingOverrideOf(context, letterSpacing: false),
+      ),
     );
     final registrar = SelectionContainer.maybeOf(context);
     final effectiveSelectionColor =
@@ -167,6 +174,50 @@ double? _maybeLineHeightScaleFactorOverrideOf(BuildContext context) {
   } on NoSuchMethodError {
     return null;
   }
+}
+
+double? _maybeSpacingOverrideOf(
+  BuildContext context, {
+  required bool letterSpacing,
+}) {
+  final data = MediaQuery.maybeOf(context);
+  if (data == null) return null;
+  try {
+    return (letterSpacing
+            ? (data as dynamic).letterSpacingOverride
+            : (data as dynamic).wordSpacingOverride)
+        as double?;
+  } on NoSuchMethodError {
+    // Flutter 3.38 predates accessibility text-spacing overrides.
+    return null;
+  }
+}
+
+TextSpan _applySpacingOverrides(TextSpan span, TextStyle overrides) {
+  if (overrides.height == null &&
+      overrides.letterSpacing == null &&
+      overrides.wordSpacing == null) {
+    return span;
+  }
+  // Match Text's overrides at every ordinary TextSpan, including explicit
+  // descendant styles. Opaque custom spans and WidgetSpans stay untouched.
+  return TextSpan(
+    text: span.text,
+    style: span.style?.merge(overrides) ?? overrides,
+    children: span.children?.map((child) {
+      return child is TextSpan && child.runtimeType == TextSpan
+          ? _applySpacingOverrides(child, overrides)
+          : child;
+    }).toList(),
+    recognizer: span.recognizer,
+    mouseCursor: span.mouseCursor,
+    onEnter: span.onEnter,
+    onExit: span.onExit,
+    semanticsLabel: span.semanticsLabel,
+    semanticsIdentifier: span.semanticsIdentifier,
+    locale: span.locale,
+    spellOut: span.spellOut,
+  );
 }
 
 StrutStyle _copyStrutStyleWithHeight(StrutStyle style, double? height) =>

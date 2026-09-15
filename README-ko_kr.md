@@ -183,9 +183,11 @@ controller.dispose();
 | `calculationLimit` | 결정론적인 작업 상한에 도달했습니다. |
 | `unmeasurablePlaceholder` | `WidgetSpan` 크기 또는 필수 baseline을 일관되게 측정할 수 없습니다. |
 | `unsupportedSpanTransformation` | 커스텀 `InlineSpan` 상태를 잃지 않고 변환할 수 없습니다. |
-| `invalidMeasurement` / `rendererFallback` | 런타임 측정 또는 보호된 renderer 작업이 실패했습니다. |
+| `invalidRuntimeMeasurement` / `rendererFallback` | 런타임 측정 또는 보호된 renderer 작업이 실패했습니다. |
 
 Reason은 사용자에게 보여 주는 번역 문자열이 아니라 진단값으로 다루세요. 커스텀 selector는 앱 전용 reason을 반환할 수 있습니다.
+
+Fallback 결과에는 실제로 측정한 Flutter 기본 레이아웃의 범위와 너비가 들어 있습니다. 잘못된 span 또는 child metadata 때문에 Flutter 기본 문단도 배치할 수 없다면 기본 레이아웃 오류가 전파되며 새 결과를 기록하지 않습니다.
 
 ## Unicode, 성능, 접근성
 

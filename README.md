@@ -183,9 +183,11 @@ Results report source ranges, lines, widths, inserted break offsets, overflow, w
 | `calculationLimit` | A deterministic work ceiling was reached. |
 | `unmeasurablePlaceholder` | A `WidgetSpan` could not provide consistent dimensions or required baseline data. |
 | `unsupportedSpanTransformation` | A custom `InlineSpan` could not be transformed without losing state. |
-| `invalidMeasurement` / `rendererFallback` | Runtime measurement or another guarded renderer operation failed. |
+| `invalidRuntimeMeasurement` / `rendererFallback` | Runtime measurement or another guarded renderer operation failed. |
 
 Applications should treat reasons as diagnostics, not as user-facing localized messages. A custom selector may return its own application-specific reason.
+
+Fallback results contain measured native ranges and widths. If invalid span or child metadata also prevents Flutter's native paragraph layout, the native error propagates and no new result is committed.
 
 ## Unicode, performance, and accessibility
 

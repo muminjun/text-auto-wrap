@@ -498,6 +498,9 @@ void main() {
         },
       );
       final firstData = render.firstChild!.parentData! as TextParentData;
+      final controller = TextAutoWrapController();
+      addTearDown(controller.dispose);
+      render.controller = controller;
       switch (fault) {
         case _MetadataFault.missingParentSpan:
           firstData.span = null;
@@ -518,11 +521,27 @@ void main() {
         wrapHost(_ParagraphHost(render)),
         phase: EnginePhase.layout,
       );
-      expect(render.result!.reason, 'unmeasurablePlaceholder');
       expect(render.measurementHelperCalls, 0);
-      expect(render.result!.applied, isFalse);
-      expect(render.result!.diagnostics, isNull);
       expect(render.effectiveText, same(render.sourceText));
+      switch (fault) {
+        case _MetadataFault.missingSourceBaseline:
+        case _MetadataFault.missingParentSpan:
+        case _MetadataFault.missingChild:
+        case _MetadataFault.extraChild:
+          // These fixtures also violate native RenderParagraph's contract.
+          // With no native geometry, preserve its failure without publishing
+          // the old fabricated one-line, zero-width result.
+          expect(render.nativeLayoutError, isNotNull);
+          expect(render.result, isNull);
+          expect(controller.result, isNull);
+        case _MetadataFault.equalButDifferentParentSpan:
+        case _MetadataFault.reorderedParentSpans:
+          expect(render.result!.reason, 'unmeasurablePlaceholder');
+          expect(render.result!.applied, isFalse);
+          expect(render.result!.diagnostics, isNull);
+          expect(render.nativeLayoutError, isNull);
+          expect(render.result!.widths.single, greaterThan(0));
+      }
     });
   }
 
