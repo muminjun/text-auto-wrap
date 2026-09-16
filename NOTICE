@@ -13,6 +13,8 @@ Adapted source files at that commit:
   -> lib/src/models/budoux_parser.dart
 - packages/core/src/core/predictors.ts
   -> lib/src/models/budoux_parser.dart
+- packages/core/src/core/selectors.ts
+  -> lib/src/core/selection.dart
 - packages/en/src/models.ts
   -> lib/src/models/english_model.dart
 - packages/ko/src/models.ts
