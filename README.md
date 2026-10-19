@@ -12,7 +12,7 @@ This is semantic wrapping, not Python-style fixed-column wrapping. Width is base
 
 ```yaml
 dependencies:
-  text_auto_wrap: ^0.1.2
+  text_auto_wrap: ^0.1.3
 ```
 
 ```dart
@@ -186,10 +186,11 @@ For widget results, `ranges`, `lines`, and `widths` describe the final painted l
 | `unmeasurablePlaceholder` | A `WidgetSpan` could not provide consistent dimensions or required baseline data. |
 | `unsupportedSpanTransformation` | A custom `InlineSpan` could not be transformed without losing state. |
 | `invalidRuntimeMeasurement` / `rendererFallback` | Runtime measurement or another guarded renderer operation failed. |
+| `layoutGuard` / `nativeLayoutGuard` / `<query>Guard` | The final guard absorbed a failure outside the semantic stage: the paragraph layout, or a parent-facing query such as `computeDryLayoutGuard`, `paintGuard`, or `hitTestChildrenGuard`. |
 
 Applications should treat reasons as diagnostics, not as user-facing localized messages. A custom selector may return its own application-specific reason.
 
-Fallback results contain validated native ranges and widths when available. A failed native diagnostic measurement is not retried in the same layout. If native geometry cannot be represented safely, `controller.result` is cleared to `null`, the original span still goes to Flutter's paragraph, and `controller.failures` exposes the stage, reason, exception, and stack trace. Failures clear after a successful layout; listener notifications remain frame-deferred. Do not interpret a null result as a zero-width or empty source layout. If Flutter's own paragraph cannot render the source, its native error still propagates.
+Fallback results contain validated native ranges and widths when available. A failed native diagnostic measurement is not retried in the same layout. If native geometry cannot be represented safely, `controller.result` is cleared to `null`, the original span still goes to Flutter's paragraph, and `controller.failures` exposes the stage, reason, exception, and stack trace. A query failure remains visible through the following layout snapshot, then clears after a clean layout. Listener notifications remain frame-deferred. Do not interpret a null result as a zero-width or empty source layout. If the semantic stage fails, the paragraph is laid out again from the source and a `layoutGuard` failure is recorded. If Flutter's own paragraph cannot lay out the source either, the text becomes inert at the smallest allowed size (no paint, no hit target) and a `nativeLayoutGuard` failure is recorded instead of throwing, so the parent layout still completes.
 
 ## Unicode, performance, and accessibility
 
@@ -219,3 +220,22 @@ This project is licensed under Apache-2.0. It is a modified Dart/Flutter port of
 Semantic work is limited to 65,536 UTF-16 units, 16,384 span occurrences, and depth 1,024 (root depth zero). Larger inputs bypass prediction and candidate work. Widgets also skip duplicate diagnostic shaping, keep native source rendering, and may publish `controller.result == null` with `TextWrapInputLimitException` in `failures`. Core `calculate()`, `predict()`, and `aggregate()` throw the independent `TextWrapInputLimitException` for oversized text. `select()` reuses a supplied valid native layout with reason `inputLimit` and no calculation-limit record, or throws that exception if no native layout is supplied. Existing exhaustive switches over calculation-limit kinds and invalid-input exceptions remain valid. Native Flutter rendering still has its own input-dependent cost.
 
 Soft opportunities protect boundaries immediately following ZWJ, grouped numbers, and the inner sides of common brackets. GL/WJ protection remains deliberately more conservative than Unicode's space-before-glue exceptions. This is not full UAX #14 conformance. Shared controllers expose the last committed snapshot; use one controller per widget for independent observation.
+
+## 0.1.3 performance controls
+
+Equivalent plain `TextSpan` trees may share up to 64 verified selections and 32
+plans for sources up to 1,024 UTF-16 units. Recognizers, hover callbacks,
+`WidgetSpan`s, and custom spans are excluded. Font or platform-locale changes
+clear shared entries. Custom predictors/calculators/selectors must return the same
+output for equal inputs while their configuration identity/equality is unchanged.
+If external configuration changes, supply a new model/strategy rather than mutate
+an object already used as a cache key. Direct `TextWrapPlan.calculate`/`select`
+calls still run custom calculators and preserve their validation errors.
+Range caches ignore available width only when the actual
+measurement inputs, including placeholder dimensions, remain equal.
+
+`optimalLayouts(assumeMonotonicWidths: true)` and
+`greedy(assumeMonotonicWidths: true)` are optional shortcuts for measurers whose
+width never decreases as a range grows. They can change results for other
+measurers and are disabled by default. See [performance benchmark](doc/performance-benchmark.md)
+for repeatable local measurements and exact-layout comparisons.

@@ -1,6 +1,6 @@
 name: text_auto_wrap
 description: Model-driven semantic line breaking for plain and rich Flutter text.
-version: 0.1.2
+version: 0.1.3
 repository: https://github.com/muminjun/text-auto-wrap
 issue_tracker: https://github.com/muminjun/text-auto-wrap/issues
 topics: [text, typography, layout, korean, english]

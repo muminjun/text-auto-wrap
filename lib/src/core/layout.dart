@@ -195,11 +195,34 @@ abstract interface class LayoutCalculator {
   });
 }
 
+// Internal trust check for shortcuts that must preserve custom calculator calls.
+bool isLibraryLayoutCalculator(LayoutCalculator calculator) =>
+    calculator is _Calculator;
+
 /// Minimum-line dynamic programming, then model-cost/balance Pareto selection.
-LayoutCalculator optimalLayouts() => const _Calculator(_Mode.optimal);
+///
+/// By default widths need not grow monotonically; only provably dominated
+/// transitions are skipped. With [assumeMonotonicWidths], extending a range past its
+/// first overflowing end is not measured further: a range that already exceeds
+/// the width is assumed to stay too wide when it grows. That bounds the
+/// measurements per line start by the length of one line instead of the rest of
+/// the paragraph. The result is identical whenever widths are non-decreasing as
+/// a range grows, as for ordinary horizontal text, and may differ for
+/// measurers where appending text can shorten a range (for example ligature
+/// or cluster-forming scripts), so it is opt-in.
+LayoutCalculator optimalLayouts({bool assumeMonotonicWidths = false}) =>
+    assumeMonotonicWidths
+    ? const _Calculator(_Mode.optimal, monotonic: true)
+    : const _Calculator(_Mode.optimal);
 
 /// Chooses the furthest fitting boundary, or the next indivisible range.
-LayoutCalculator greedy() => const _Calculator(_Mode.greedy);
+///
+/// [assumeMonotonicWidths] stops measuring a line start's longer ranges after
+/// the first overflowing end, with the trade-off described on [optimalLayouts].
+LayoutCalculator greedy({bool assumeMonotonicWidths = false}) =>
+    assumeMonotonicWidths
+    ? const _Calculator(_Mode.greedy, monotonic: true)
+    : const _Calculator(_Mode.greedy);
 
 /// Enumerates all shifts of each baseline soft break by up to [radius] candidate
 /// positions within its paragraph. Defaults to a freshly calculated greedy
@@ -216,17 +239,21 @@ LayoutCalculator nearbyLayouts({int radius = 1}) {
 enum _Mode { optimal, greedy, nearby }
 
 final class _Calculator implements LayoutCalculator {
-  const _Calculator(this.mode, {this.radius = 0});
+  const _Calculator(this.mode, {this.radius = 0, this.monotonic = false});
 
   final _Mode mode;
   final int radius;
+  final bool monotonic;
 
   @override
   bool operator ==(Object other) =>
-      other is _Calculator && other.mode == mode && other.radius == radius;
+      other is _Calculator &&
+      other.mode == mode &&
+      other.radius == radius &&
+      other.monotonic == monotonic;
 
   @override
-  int get hashCode => Object.hash(mode, radius);
+  int get hashCode => Object.hash(mode, radius, monotonic);
 
   @override
   LayoutCalculationResult calculate({
@@ -278,9 +305,17 @@ final class _Calculator implements LayoutCalculator {
                   measurements,
                   budget,
                   maxWidth,
+                  monotonic,
                 ),
               ]
-            : _optimal(paragraph, states, measurements, budget, maxWidth);
+            : _optimal(
+                paragraph,
+                states,
+                measurements,
+                budget,
+                maxWidth,
+                monotonic,
+              );
       }
       if (mode == _Mode.optimal) {
         // Charge all final paths, including those scalar dominance discards,
@@ -322,7 +357,14 @@ final class _Calculator implements LayoutCalculator {
     if (baseline == null) {
       var state = _State.empty();
       for (final paragraph in paragraphs) {
-        state = _greedy(paragraph, state, measurements, budget, maxWidth);
+        state = _greedy(
+          paragraph,
+          state,
+          measurements,
+          budget,
+          maxWidth,
+          monotonic,
+        );
       }
       baseline = _layout(text, state, maxWidth, budget);
     }
@@ -420,6 +462,7 @@ List<_State> _optimal(
   _Measurements measurements,
   _Budget budget,
   double maxWidth,
+  bool monotonic,
 ) {
   final whole = TextLineRange(paragraph.start, paragraph.end);
   budget.take();
@@ -436,7 +479,40 @@ List<_State> _optimal(
   final count = paragraph.boundaries.length + 1;
   final states = List.generate(count + 1, (_) => <_State>[]);
   states[0] = seeds;
-  for (var end = 1; end <= count; end++) {
+  if (monotonic) {
+    // Forward by line start: every state at `start` is final once all earlier
+    // starts were processed, and each frontier still receives its transitions
+    // in ascending start order, as in the exhaustive loop below.
+    for (var start = 0; start < count; start++) {
+      if (states[start].isEmpty) continue;
+      for (var end = start + 1; end <= count; end++) {
+        final range = paragraph.range(start, end);
+        if (range.end < range.start) continue;
+        var overflowing = false;
+        for (final previous in states[start]) {
+          budget.take();
+          if (states[end].isNotEmpty &&
+              previous.lineCount + 1 > states[end].first.lineCount) {
+            continue;
+          }
+          final width = measurements.measure(range);
+          if (width > maxWidth) {
+            overflowing = true;
+            break;
+          }
+          final state = _State.extend(
+            previous,
+            range,
+            width,
+            paragraph.candidateAt(end),
+          );
+          _retain(states[end], state);
+        }
+        if (overflowing) break;
+      }
+    }
+  }
+  for (var end = 1; !monotonic && end <= count; end++) {
     for (var start = 0; start < end; start++) {
       if (states[start].isEmpty) continue;
       final range = paragraph.range(start, end);
@@ -445,6 +521,14 @@ List<_State> _optimal(
       // ceiling also bounds shaping work for non-monotonic custom measurers.
       for (final previous in states[start]) {
         budget.take();
+        // Every prefix at a start has the same minimal line count. A longer
+        // path cannot enter this end's frontier, regardless of the range's
+        // width (including non-monotonic shaping). Keep charging transitions
+        // so this shortcut does not relax the deterministic state ceiling.
+        if (states[end].isNotEmpty &&
+            previous.lineCount + 1 > states[end].first.lineCount) {
+          continue;
+        }
         final width = measurements.measure(range);
         if (width > maxWidth) continue;
         final state = _State.extend(
@@ -461,7 +545,7 @@ List<_State> _optimal(
   // No fitting path exists. Preserve content in an explicit overflowing layout.
   return [
     for (final seed in seeds)
-      _greedy(paragraph, seed, measurements, budget, maxWidth),
+      _greedy(paragraph, seed, measurements, budget, maxWidth, monotonic),
   ];
 }
 
@@ -471,6 +555,7 @@ _State _greedy(
   _Measurements measurements,
   _Budget budget,
   double maxWidth,
+  bool monotonic,
 ) {
   final last = paragraph.boundaries.length + 1;
   var start = 0;
@@ -482,7 +567,11 @@ _State _greedy(
       final range = paragraph.range(start, end);
       if (range.end < range.start) continue;
       first ??= end;
-      if (measurements.measure(range) <= maxWidth) fitting = end;
+      if (measurements.measure(range) <= maxWidth) {
+        fitting = end;
+      } else if (monotonic) {
+        break;
+      }
     }
     final end = fitting ?? first!;
     final range = paragraph.range(start, end);

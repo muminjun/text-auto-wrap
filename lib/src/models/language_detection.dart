@@ -1,6 +1,7 @@
 import 'dart:ui' show Locale;
 
 import '../core/boundaries.dart';
+import '../core/library_predictor.dart';
 import '../core/models.dart';
 import 'budoux_parser.dart';
 import 'english_model.dart';
@@ -269,23 +270,30 @@ PhraseModel _titleModel(List<Map<String, Map<String, num>>> weights) =>
 // Upstream models score the beginning of a whitespace run. This package's
 // boundary contract uses the end of that run. Keep only those source-space
 // predictions, preserving the score and a legal grapheme boundary at the end.
-final class _SpaceBoundaryPredictor implements BoundaryPredictor {
+final class _SpaceBoundaryPredictor implements LibraryBoundaryPredictor {
   _SpaceBoundaryPredictor(this._raw);
 
   final BudouxPredictor _raw;
 
   @override
   List<int> predict(String text) {
-    final predicted = _raw.predict(text).toSet();
-    final result = <int>[];
+    final starts = <int>[];
+    final ends = <int>[];
     for (final end in allowedBoundaries(text, BoundaryMode.spaces)) {
       var start = end;
       while (start > 0 &&
           isBreakableWhitespace(text.substring(start - 1, start))) {
         start--;
       }
-      if (start > 0 && predicted.contains(start)) result.add(end);
+      if (start > 0) {
+        starts.add(start);
+        ends.add(end);
+      }
     }
-    return List.unmodifiable(result);
+    final predicted = predictBudouxAtOffsets(_raw, text, starts).toSet();
+    return List.unmodifiable([
+      for (var i = 0; i < starts.length; i++)
+        if (predicted.contains(starts[i])) ends[i],
+    ]);
   }
 }

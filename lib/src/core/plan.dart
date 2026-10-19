@@ -2,6 +2,7 @@ import 'boundaries.dart';
 import 'diagnostics.dart';
 import 'exceptions.dart';
 import 'layout.dart';
+import 'library_predictor.dart';
 import 'models.dart';
 import 'prediction.dart';
 import 'selection.dart';
@@ -190,6 +191,13 @@ final class TextWrapPlan {
     bool diagnostics = false,
   }) {
     _validate(maxWidth, nativeLayout, maxLines);
+    final fitting = _fittingNativeResult(
+      maxWidth: maxWidth,
+      nativeLayout: nativeLayout,
+      maxLines: maxLines,
+      diagnostics: diagnostics,
+    );
+    if (fitting != null) return fitting;
     if (text.length > maxSemanticTextLength && nativeLayout == null) {
       _checkInputLength();
     }
@@ -275,6 +283,78 @@ final class TextWrapPlan {
               nativeLayout: native,
               selection: decision,
               calculationLimit: limit,
+              cache: TextWrapCacheDiagnostics(
+                predictionRuns: _predictionRuns,
+                predictionHits: _predictionHits,
+                aggregationRuns: _aggregationRuns,
+                aggregationHits: _aggregationHits,
+                calculationRuns: _calculationRuns,
+                selectionRuns: _selectionRuns,
+                measurementRuns: _measurementRuns,
+                measurementHits: _measurementHits,
+              ),
+            )
+          : null,
+    );
+  }
+
+  /// Native result for text that already fits on one line, or null.
+  ///
+  /// [BalanceStrategy] only replaces a fitting native layout with a calculated
+  /// layout of the same line count and a strictly lower model cost. A single
+  /// line has no selected break, so its cost is zero and no calculated layout
+  /// can improve on it: the selector always answers `nativeNoModelImprovement`
+  /// with the native layout. Skipping prediction, aggregation, and calculation
+  /// therefore cannot change the selected layout. Diagnostics report only
+  /// candidates that an earlier call already produced. Caller-supplied
+  /// predictors, aggregators, and calculators never take this path, so their
+  /// validation and failure reporting remain intact.
+  TextWrapResult? _fittingNativeResult({
+    required double maxWidth,
+    required LineBreakLayout? nativeLayout,
+    required int? maxLines,
+    required bool diagnostics,
+  }) {
+    final selector = strategy.selector;
+    final resolved = model;
+    if (nativeLayout == null ||
+        resolved == null ||
+        strategy.aggregator is! CandidateAggregator ||
+        !isLibraryLayoutCalculator(strategy.calculator) ||
+        resolved.levels.any(
+          (level) => level.predictor is! LibraryBoundaryPredictor,
+        ) ||
+        nativeLayout.lineCount != 1 ||
+        text.length > maxSemanticTextLength ||
+        selector is! BalanceStrategy ||
+        !selector.tolerance.isFinite ||
+        selector.tolerance < 0 ||
+        selector.tolerance > 1 ||
+        (maxLines != null && maxLines < 1)) {
+      return null;
+    }
+    final native = LineBreakLayout(
+      sourceText: text,
+      ranges: nativeLayout.ranges,
+      widths: nativeLayout.widths,
+      maxWidth: maxWidth,
+    );
+    if (native.overflow) return null;
+    const decision = LayoutSelectionDecision.native(
+      reason: 'nativeNoModelImprovement',
+    );
+    _selectionRuns++;
+    return TextWrapResult(
+      layout: native,
+      applied: false,
+      reason: decision.reason,
+      source: decision.source,
+      diagnostics: diagnostics
+          ? TextWrapDiagnostics(
+              predictions: _predictions ?? const [],
+              candidates: _candidates ?? const [],
+              nativeLayout: native,
+              selection: decision,
               cache: TextWrapCacheDiagnostics(
                 predictionRuns: _predictionRuns,
                 predictionHits: _predictionHits,

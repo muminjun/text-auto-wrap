@@ -1,3 +1,4 @@
+import 'package:characters/characters.dart';
 import 'package:flutter/painting.dart';
 
 import '../core/exceptions.dart';
@@ -31,17 +32,21 @@ LineBreakLayout measureNativeTextLayout(
       widths.add(normalizedFlutterWidth(metrics.width));
       continue;
     }
-    var boundary = painter.getLineBoundary(TextPosition(offset: offset));
-    if (boundary.start >= 0 &&
-        boundary.start < offset &&
-        boundary.end == offset) {
-      // CanvasKit before Flutter PR #192664 ignores affinity and includes both
-      // ends of a soft line. Query one code unit into the current line instead.
-      // Upstream affinity also selects this line on engines that honor it when
-      // the line is a single code unit. This correction is attempted only once.
-      boundary = painter.getLineBoundary(
-        TextPosition(offset: offset + 1, affinity: TextAffinity.upstream),
-      );
+    var boundary = _lineBoundaryAt(painter, offset);
+    if (boundary.start != offset || boundary.end < boundary.start) {
+      // A line that holds one glyph wider than the available width leaves the
+      // spaces that follow it outside every reported line boundary (the engine
+      // answers with the previous line or with -1). Those spaces hang past the
+      // line edge, so they belong to the previous line, exactly where a
+      // normal soft wrap puts trailing spaces. Newlines are not absorbed:
+      // delimiters stay outside ranges and keep their own validation.
+      final visible = _hangingSpaceEnd(source, offset);
+      if (visible > offset && ranges.isNotEmpty && ranges.last.end == offset) {
+        ranges[ranges.length - 1] = TextLineRange(ranges.last.start, visible);
+        offset = visible;
+        if (offset == source.length) break;
+        boundary = _lineBoundaryAt(painter, offset);
+      }
     }
     if (boundary.start != offset ||
         boundary.end < boundary.start ||
@@ -113,6 +118,35 @@ double normalizedFlutterWidth(double width) {
     );
   }
   return width < 0 ? 0 : width;
+}
+
+TextRange _lineBoundaryAt(TextPainter painter, int offset) {
+  final boundary = painter.getLineBoundary(TextPosition(offset: offset));
+  if (boundary.start >= 0 &&
+      boundary.start < offset &&
+      boundary.end == offset) {
+    // CanvasKit before Flutter PR #192664 ignores affinity and includes both
+    // ends of a soft line. Query one code unit into the current line instead.
+    // Upstream affinity also selects this line on engines that honor it when
+    // the line is a single code unit. This correction is attempted only once.
+    return painter.getLineBoundary(
+      TextPosition(offset: offset + 1, affinity: TextAffinity.upstream),
+    );
+  }
+  return boundary;
+}
+
+/// The offset of the first character at or after [offset] that is not a
+/// breakable space (or [offset] itself when it starts with another character).
+int _hangingSpaceEnd(String source, int offset) {
+  var end = offset;
+  for (final grapheme in source.substring(offset).characters) {
+    if (!isBreakableWhitespace(grapheme) || grapheme.codeUnits.any(isNewline)) {
+      break;
+    }
+    end += grapheme.length;
+  }
+  return end;
 }
 
 int? _hardBreakStart(String source, int lineStart, int lineEnd) {

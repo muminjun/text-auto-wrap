@@ -78,7 +78,12 @@ final class BudouxPredictor implements BoundaryPredictor {
   final double _baseScore;
 
   @override
-  List<int> predict(String text) {
+  List<int> predict(String text) => _predictAtOffsets(
+    text,
+    Iterable<int>.generate(text.isEmpty ? 0 : text.length - 1, (i) => i + 1),
+  );
+
+  List<int> _predictAtOffsets(String text, Iterable<int> offsets) {
     final result = <int>[];
     num score(String group, int start, int end) =>
         _model[group]?[text.substring(
@@ -87,7 +92,7 @@ final class BudouxPredictor implements BoundaryPredictor {
         )] ??
         0;
 
-    for (var offset = 1; offset < text.length; offset++) {
+    for (final offset in offsets) {
       var total = _baseScore;
       total += score('UW1', offset - 3, offset - 2);
       total += score('UW2', offset - 2, offset - 1);
@@ -112,3 +117,11 @@ final class BudouxPredictor implements BoundaryPredictor {
     return List.unmodifiable(result);
   }
 }
+
+// Internal adapter entry point: bundled space models only consume scores at
+// whitespace starts. Feature scores are independent of all other positions.
+List<int> predictBudouxAtOffsets(
+  BudouxPredictor predictor,
+  String text,
+  Iterable<int> offsets,
+) => predictor._predictAtOffsets(text, offsets);

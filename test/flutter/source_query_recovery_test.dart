@@ -36,11 +36,19 @@ void main() {
     render.markNeedsLayout();
     failOnce = true;
     const query = BoxConstraints(maxWidth: 100);
-    expect(() => render.computeDryLayout(query), throwsStateError);
+    // Parent-facing queries never throw: the failure is recorded and the
+    // native paragraph answers instead.
+    expect(render.computeDryLayout(query), isA<Size>());
+    expect(render.failures.single.reason, 'computeDryLayoutGuard');
+    expect(render.failures.single.error, isA<StateError>());
     expect(render.effectiveText, same(effective));
     expect(render.result, same(selection));
     expect(render.computeDryLayout(query), const Size(60, 10));
     expect(render.computeDryLayout(query), const Size(60, 10));
+    await tester.pump();
+    expect(render.result!.applied, isTrue);
+    expect(render.failures.single.reason, 'computeDryLayoutGuard');
+    render.markNeedsLayout();
     await tester.pump();
     expect(render.result!.applied, isTrue);
     expect(render.failures, isEmpty);

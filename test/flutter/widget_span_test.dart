@@ -711,14 +711,14 @@ class _MappingParagraph extends RenderTextAutoWrap {
 
   @override
   void performLayout() {
-    try {
-      super.performLayout();
-    } catch (error) {
-      // Deliberately invalid source/child metadata can also violate native
-      // RenderParagraph's contract. Observe the adapter result before that
-      // native failure without hiding it inside the measurement helper.
-      nativeLayoutError = error;
-      size = constraints.smallest;
+    super.performLayout();
+    // Deliberately invalid source/child metadata can also violate native
+    // RenderParagraph's contract. The final layout guard absorbs that failure
+    // so the parent can finish; it stays observable as a failure record.
+    for (final failure in failures) {
+      if (failure.reason == 'nativeLayoutGuard') {
+        nativeLayoutError = failure.error;
+      }
     }
   }
 

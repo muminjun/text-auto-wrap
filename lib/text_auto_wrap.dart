@@ -12,7 +12,7 @@ export 'src/core/boundaries.dart'
         hardBreakPattern,
         isHardBreak;
 export 'src/core/exceptions.dart';
-export 'src/core/layout.dart';
+export 'src/core/layout.dart' hide isLibraryLayoutCalculator;
 export 'src/core/models.dart';
 export 'src/core/prediction.dart';
 export 'src/core/selection.dart';
@@ -20,9 +20,9 @@ export 'src/core/strategy.dart';
 export 'src/core/diagnostics.dart';
 export 'src/core/plan.dart';
 export 'src/core/select_text_wrap.dart';
-export 'src/models/budoux_parser.dart';
+export 'src/models/budoux_parser.dart' hide predictBudouxAtOffsets;
 export 'src/models/language_detection.dart';
 export 'src/flutter/controller.dart';
 export 'src/flutter/text_auto_wrap.dart';
 
-const String textAutoWrapVersion = '0.1.2';
+const String textAutoWrapVersion = '0.1.3';

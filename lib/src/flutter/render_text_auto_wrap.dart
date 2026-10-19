@@ -1,5 +1,8 @@
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'dart:ui' show PlatformDispatcher;
+
+import 'package:flutter/foundation.dart' show kIsWeb, visibleForTesting;
 import 'package:flutter/rendering.dart';
+import 'package:flutter/scheduler.dart' show SchedulerBinding;
 import 'package:flutter/widgets.dart';
 
 import '../core/boundaries.dart';
@@ -45,6 +48,7 @@ class RenderTextAutoWrap extends RenderParagraph {
        _model = model,
        _strategy = strategy,
        _sourceContainsOpaqueSpan = _containsOpaqueSpan(sourceText),
+       _sourceSharable = _isPlainTextTree(sourceText),
        _controller = controller,
        _devicePixelRatio = devicePixelRatio,
        _effectiveTextKey = _InlineSpanCacheKey(sourceText),
@@ -72,11 +76,13 @@ class RenderTextAutoWrap extends RenderParagraph {
   TextWrapResult? _lastResult;
   List<TextWrapFailure> _lastFailures = const [];
   TextWrapPlan? _cachedPlan;
+  bool _cachedPlanShared = false;
   _RendererPlanKey? _cachedPlanKey;
   _RendererSelectionKey? _cachedSelectionKey;
   TextWrapResult? _cachedSelection;
   InlineSpan? _cachedEffectiveText;
   bool _sourceContainsOpaqueSpan;
+  bool _sourceSharable;
   bool _opaqueTextNeedsRefresh = false;
   _InlineSpanCacheKey _effectiveTextKey;
   double _devicePixelRatio;
@@ -109,15 +115,45 @@ class RenderTextAutoWrap extends RenderParagraph {
   @visibleForTesting
   TextWrapResult? get result => _lastResult;
 
+  /// Drops the selections and plans shared by renderers with equal inputs.
+  @visibleForTesting
+  static void clearSharedCaches() => _SharedLayoutCache.clear();
+
+  /// Entry counts of the shared selection and plan caches.
+  @visibleForTesting
+  static ({int selections, int plans}) get sharedCacheSizes => (
+    selections: _SharedLayoutCache.selectionCount,
+    plans: _SharedLayoutCache.planCount,
+  );
+
   /// Adapter failures from the latest layout, including unavailable geometry.
   List<TextWrapFailure> get failures => _lastFailures;
 
   set sourceText(InlineSpan value) {
     if (identical(_sourceText, value)) return;
+    try {
+      _fault('sourceText');
+      _updateSourceText(value);
+    } catch (error, stackTrace) {
+      // Comparing or replacing spans runs user-defined span code during the
+      // build phase. Keep the new source and let the next layout paint it
+      // natively instead of failing the widget update.
+      _sourceText = value;
+      _sourceContainsOpaqueSpan = true;
+      _sourceSharable = false;
+      _forceNativeNextLayout = true;
+      _discardSelectionCaches();
+      _deferFailure('sourceText', error, stackTrace);
+      markNeedsLayout();
+    }
+  }
+
+  void _updateSourceText(InlineSpan value) {
     final unchanged =
         _InlineSpanCacheKey(_sourceText) == _InlineSpanCacheKey(value);
     _sourceText = value;
     _sourceContainsOpaqueSpan = _containsOpaqueSpan(value);
+    _sourceSharable = _isPlainTextTree(value);
     // Rebuilt equivalent spans must not temporarily remove semantic breaks:
     // replacing the paragraph disposes active selection fragments, which can
     // collapse selection when the renderer also moves to another parent.
@@ -155,15 +191,138 @@ class RenderTextAutoWrap extends RenderParagraph {
     }
   }
 
+  /// Test hook invoked at the start of each guarded region with its name.
+  ///
+  /// A hook that throws simulates a failure at that point, which lets tests
+  /// prove that the final guard keeps the parent layout alive.
+  @visibleForTesting
+  static void Function(String point)? debugFaultInjector;
+
+  /// Whether the last layout could not produce any paragraph at all.
+  @visibleForTesting
+  bool get debugLayoutBroken => _layoutBroken;
+
+  bool _layoutBroken = false;
+  bool _forceNativeNextLayout = false;
+
+  void _fault(String point) => debugFaultInjector?.call(point);
+
+  /// Lays out the paragraph with whatever text is currently committed.
+  void _layoutNativeParagraph() {
+    try {
+      _fault('superPerformLayout');
+      super.performLayout();
+      _layoutBroken = false;
+    } catch (_) {
+      // Remember whether the failing paragraph was already the plain source:
+      // repeating that exact layout cannot succeed, so recovery skips it.
+      _nativeLayoutFailedOnSource =
+          _effectiveTextKey == _InlineSpanCacheKey(_sourceText);
+      rethrow;
+    }
+  }
+
+  bool _nativeLayoutFailedOnSource = false;
+
   @override
   void performLayout() {
+    // The semantic path is an enhancement: whatever fails inside it, this
+    // render object must still finish layout so the parent can complete.
+    _nativeLayoutFailedOnSource = false;
+    final deferred = _deferredFailures;
+    _deferredFailures = const [];
+    _lastFailures = const [];
+    try {
+      _fault('performLayout');
+      _performSemanticLayout();
+      _layoutBroken = false;
+    } catch (error, stackTrace) {
+      _recoverLayout(error, stackTrace);
+    } finally {
+      if (deferred.isNotEmpty) {
+        final reasons = _lastFailures.map((failure) => failure.reason).toSet();
+        _lastFailures = List.unmodifiable([
+          ..._lastFailures,
+          for (final failure in deferred)
+            if (reasons.add(failure.reason)) failure,
+        ]);
+        final result = _lastResult;
+        if (result == null) {
+          _controller?.clearResult(this, failures: _lastFailures);
+        } else {
+          _controller?.commitResult(this, result, failures: _lastFailures);
+        }
+      }
+    }
+  }
+
+  /// Last-resort recovery: paint the source text with plain paragraph layout.
+  ///
+  /// If even that fails (Flutter or the engine rejects the source itself),
+  /// the render object takes the smallest allowed size and stays inert, so
+  /// the failure is limited to this one text.
+  void _recoverLayout(Object error, StackTrace stackTrace) {
+    final nativeFailedOnSource = _nativeLayoutFailedOnSource;
+    final failures = <TextWrapFailure>[
+      ..._lastFailures,
+      TextWrapFailure(
+        stage: nativeFailedOnSource
+            ? TextWrapFailureStage.nativeMeasurement
+            : TextWrapFailureStage.semanticLayout,
+        reason: nativeFailedOnSource ? 'nativeLayoutGuard' : 'layoutGuard',
+        error: error,
+        stackTrace: stackTrace,
+      ),
+    ];
+    _discardSelectionCaches();
+    var painted = false;
+    if (!nativeFailedOnSource) {
+      try {
+        _setEffectiveText(_sourceText);
+        _layoutNativeParagraph();
+        painted = true;
+      } catch (nativeError, nativeStack) {
+        failures.add(
+          TextWrapFailure(
+            stage: TextWrapFailureStage.nativeMeasurement,
+            reason: 'nativeLayoutGuard',
+            error: nativeError,
+            stackTrace: nativeStack,
+          ),
+        );
+      }
+    }
+    if (!painted) {
+      size = constraints.constrain(Size.zero);
+      _layoutBroken = true;
+    }
+    _lastResult = null;
+    _lastFailures = List.unmodifiable(failures);
+    _controller?.clearResult(this, failures: _lastFailures);
+  }
+
+  void _discardSelectionCaches() {
+    _cachedPlan = null;
+    _cachedPlanKey = null;
+    _cachedSelection = null;
+    _cachedSelectionKey = null;
+    _cachedEffectiveText = null;
+  }
+
+  void _performSemanticLayout() {
     final constraints = this.constraints;
+    if (_forceNativeNextLayout) {
+      _forceNativeNextLayout = false;
+      _commitFallback(reason: 'guardedFallback', measureNative: false);
+      _layoutNativeParagraph();
+      return;
+    }
     if (!constraints.hasBoundedWidth ||
         !constraints.maxWidth.isFinite ||
         constraints.maxWidth <= 0 ||
         !softWrap) {
       _commitFallback(reason: softWrap ? 'unusableWidth' : 'softWrapDisabled');
-      super.performLayout();
+      _layoutNativeParagraph();
       return;
     }
 
@@ -220,6 +379,14 @@ class RenderTextAutoWrap extends RenderParagraph {
         textHeightBehavior: textHeightBehavior,
         placeholders: _PlaceholderCacheKey(placeholders),
       );
+      // Range widths are shaped at unbounded width, so only the placeholder
+      // dimensions (already in the key) tie them to the available width. The
+      // plan keeps its range cache while the width changes.
+      final rangeKey = measurementKey.withoutWidth();
+      final shareable =
+          _sourceSharable &&
+          placeholders.isEmpty &&
+          encoded.text.length <= _SharedLayoutCache.maxTextLength;
       final selectionKey = _RendererSelectionKey(
         plan: planKey,
         measurement: measurementKey,
@@ -230,7 +397,21 @@ class RenderTextAutoWrap extends RenderParagraph {
         maxLines: maxLines,
       );
       final cached = _cachedSelection;
-      if (_cachedSelectionKey == selectionKey && cached != null) {
+      if (shareable) _SharedLayoutCache.prepare();
+      final shared =
+          shareable && !(_cachedSelectionKey == selectionKey && cached != null)
+          ? _SharedLayoutCache.selection(selectionKey)
+          : null;
+      if (shared != null) {
+        // An equivalent renderer already selected and verified this layout.
+        _selectionCacheHits++;
+        nativeLayout = shared.result.diagnostics?.nativeLayout;
+        _cachedSelectionKey = selectionKey;
+        _cachedSelection = shared.result;
+        _cachedEffectiveText = shared.effectiveText;
+        _setEffectiveText(shared.effectiveText);
+        _commit(_withRendererCache(shared.result));
+      } else if (_cachedSelectionKey == selectionKey && cached != null) {
         _selectionCacheHits++;
         nativeLayout = cached.diagnostics?.nativeLayout;
         // The complete measurement key includes the current child dimensions.
@@ -252,13 +433,13 @@ class RenderTextAutoWrap extends RenderParagraph {
           encoded.text,
           constraints.maxWidth,
         );
-        final result = _planFor(planKey).select(
+        final result = _planFor(planKey, shareable: shareable).select(
           maxWidth: constraints.maxWidth,
           nativeLayout: nativeLayout,
           maxLines: maxLines,
           measureRange: (start, end) =>
               _measureRange(encoded, start, end, placeholders),
-          measurementCacheKey: measurementKey,
+          measurementCacheKey: rangeKey,
           diagnostics: true,
         );
         _commitSelection(encoded, _withRendererCache(result), placeholders);
@@ -266,6 +447,12 @@ class RenderTextAutoWrap extends RenderParagraph {
           _cachedSelectionKey = selectionKey;
           _cachedSelection = _lastResult;
           _cachedEffectiveText = super.text;
+          if (shareable) {
+            _SharedLayoutCache.putSelection(
+              selectionKey,
+              _SharedSelection(_lastResult!, super.text),
+            );
+          }
         }
       }
     } catch (error, stackTrace) {
@@ -292,18 +479,90 @@ class RenderTextAutoWrap extends RenderParagraph {
     } finally {
       sourcePainter?.dispose();
     }
-    super.performLayout();
+    _layoutNativeParagraph();
+  }
+
+  /// Runs a parent-facing geometry query without letting it throw.
+  ///
+  /// Parents call intrinsic and dry queries before layout, outside
+  /// [performLayout]'s own protection. A failure first falls back to Flutter's
+  /// native query, then to [safe], and is published as a failure record.
+  T _guardedQuery<T>(
+    String point,
+    T Function() semantic,
+    T Function() native,
+    T Function() safe,
+  ) {
+    try {
+      _fault(point);
+      return semantic();
+    } catch (error, stackTrace) {
+      _deferFailure(point, error, stackTrace);
+    }
+    try {
+      _fault('${point}Native');
+      return native();
+    } catch (_) {
+      return safe();
+    }
+  }
+
+  /// Records a failure that happened outside layout and keeps it for the
+  /// native relayout that follows, so the record survives the layout reset.
+  void _deferFailure(String point, Object error, StackTrace stackTrace) {
+    final reason = '${point}Guard';
+    final failure =
+        _reportQueryFailure(point, error, stackTrace) ??
+        _lastFailures.firstWhere((failure) => failure.reason == reason);
+    if (_deferredFailures.any((entry) => entry.reason == reason)) return;
+    _deferredFailures = List.unmodifiable([..._deferredFailures, failure]);
+  }
+
+  List<TextWrapFailure> _deferredFailures = const [];
+
+  TextWrapFailure? _reportQueryFailure(
+    String point,
+    Object error,
+    StackTrace stackTrace,
+  ) {
+    // Parents repeat queries; keep one record per query point.
+    final reason = '${point}Guard';
+    if (_lastFailures.any((failure) => failure.reason == reason)) return null;
+    final failure = TextWrapFailure(
+      stage: TextWrapFailureStage.semanticLayout,
+      reason: reason,
+      error: error,
+      stackTrace: stackTrace,
+    );
+    _lastFailures = List.unmodifiable([..._lastFailures, failure]);
+    final result = _lastResult;
+    if (result == null) {
+      _controller?.clearResult(this, failures: _lastFailures);
+    } else {
+      _controller?.commitResult(this, result, failures: _lastFailures);
+    }
+    return failure;
   }
 
   @override
-  double computeMinIntrinsicWidth(double height) => _canUseNativeSourceQueries
-      ? super.computeMinIntrinsicWidth(height)
-      : _sourceIntrinsicWidth(minimum: true);
+  double computeMinIntrinsicWidth(double height) => _guardedQuery(
+    'computeMinIntrinsicWidth',
+    () => _canUseNativeSourceQueries
+        ? super.computeMinIntrinsicWidth(height)
+        : _sourceIntrinsicWidth(minimum: true),
+    () => super.computeMinIntrinsicWidth(height),
+    () => 0,
+  );
 
   @override
-  double computeMaxIntrinsicWidth(double height) => _canUseNativeSourceQueries
-      ? super.computeMaxIntrinsicWidth(height)
-      : _sourceIntrinsicWidth(minimum: false);
+  double computeMaxIntrinsicWidth(double height) => _guardedQuery(
+    'computeMaxIntrinsicWidth',
+    () => _canUseNativeSourceQueries
+        ? super.computeMaxIntrinsicWidth(height)
+        : _sourceIntrinsicWidth(minimum: false),
+    () => super.computeMaxIntrinsicWidth(height),
+    () => 0,
+  );
 
   double _sourceIntrinsicWidth({required bool minimum}) {
     // Inserted breaks depend on the width chosen by the parent. Feeding them
@@ -324,36 +583,153 @@ class RenderTextAutoWrap extends RenderParagraph {
   }
 
   @override
-  double computeMinIntrinsicHeight(double width) => _canUseNativeSourceQueries
-      ? super.computeMinIntrinsicHeight(width)
-      : _sourceDryMeasurement(width, width).size.height;
+  double computeMinIntrinsicHeight(double width) => _guardedQuery(
+    'computeMinIntrinsicHeight',
+    () => _canUseNativeSourceQueries
+        ? super.computeMinIntrinsicHeight(width)
+        : _sourceDryMeasurement(width, width).size.height,
+    () => super.computeMinIntrinsicHeight(width),
+    () => 0,
+  );
 
   @override
-  double computeMaxIntrinsicHeight(double width) => _canUseNativeSourceQueries
-      ? super.computeMaxIntrinsicHeight(width)
-      : _sourceDryMeasurement(width, width).size.height;
+  double computeMaxIntrinsicHeight(double width) => _guardedQuery(
+    'computeMaxIntrinsicHeight',
+    () => _canUseNativeSourceQueries
+        ? super.computeMaxIntrinsicHeight(width)
+        : _sourceDryMeasurement(width, width).size.height,
+    () => super.computeMaxIntrinsicHeight(width),
+    () => 0,
+  );
 
   @override
-  Size computeDryLayout(BoxConstraints constraints) =>
-      _canUseNativeSourceQueries
-      ? super.computeDryLayout(constraints)
-      : constraints.constrain(
-          _sourceDryMeasurement(
-            constraints.minWidth,
-            constraints.maxWidth,
-          ).size,
-        );
+  Size computeDryLayout(BoxConstraints constraints) => _guardedQuery(
+    'computeDryLayout',
+    () => _canUseNativeSourceQueries
+        ? super.computeDryLayout(constraints)
+        : constraints.constrain(
+            _sourceDryMeasurement(
+              constraints.minWidth,
+              constraints.maxWidth,
+            ).size,
+          ),
+    () => super.computeDryLayout(constraints),
+    () => constraints.smallest,
+  );
 
   @override
   double computeDryBaseline(
     BoxConstraints constraints,
     TextBaseline baseline,
-  ) => _canUseNativeSourceQueries
-      ? super.computeDryBaseline(constraints, baseline)
-      : _sourceDryMeasurement(
-          constraints.minWidth,
-          constraints.maxWidth,
-        ).baseline;
+  ) => _guardedQuery(
+    'computeDryBaseline',
+    () => _canUseNativeSourceQueries
+        ? super.computeDryBaseline(constraints, baseline)
+        : _sourceDryMeasurement(
+            constraints.minWidth,
+            constraints.maxWidth,
+          ).baseline,
+    () => super.computeDryBaseline(constraints, baseline),
+    () => 0,
+  );
+
+  @override
+  void paint(PaintingContext context, Offset offset) {
+    if (_layoutBroken) return;
+    final canvas = context.canvas;
+    final saveCount = canvas.getSaveCount();
+    try {
+      _fault('paint');
+      super.paint(context, offset);
+    } catch (error, stackTrace) {
+      try {
+        // A failed paint can leave save/clip state open on the shared canvas.
+        canvas.restoreToCount(saveCount);
+      } catch (_) {
+        // The canvas may already be finalized by a child layer; nothing to do.
+      }
+      // Inserted breaks are the only difference from native paint. Relayout
+      // once with the source text instead of failing every frame.
+      if (_lastResult?.applied ?? false) {
+        _deferFailure('paint', error, stackTrace);
+        _forceNativeNextLayout = true;
+        SchedulerBinding.instance.addPostFrameCallback((_) {
+          if (attached) markNeedsLayout();
+        });
+      } else {
+        _reportQueryFailure('paint', error, stackTrace);
+      }
+    }
+  }
+
+  @override
+  bool hitTestChildren(BoxHitTestResult result, {required Offset position}) {
+    if (_layoutBroken) return false;
+    try {
+      _fault('hitTestChildren');
+      return super.hitTestChildren(result, position: position);
+    } catch (error, stackTrace) {
+      _reportQueryFailure('hitTestChildren', error, stackTrace);
+      return false;
+    }
+  }
+
+  bool _semanticsDescribeFailed = false;
+
+  @override
+  void describeSemanticsConfiguration(SemanticsConfiguration config) {
+    _semanticsDescribeFailed = false;
+    try {
+      _fault('describeSemanticsConfiguration');
+      super.describeSemanticsConfiguration(config);
+    } catch (error, stackTrace) {
+      _semanticsDescribeFailed = true;
+      _reportQueryFailure('describeSemanticsConfiguration', error, stackTrace);
+      try {
+        config
+          ..isSemanticBoundary = true
+          ..textDirection = textDirection
+          ..label = _sourceText.toPlainText(includeSemanticsLabels: false);
+      } catch (_) {
+        // An unreadable source still leaves a valid, label-less node.
+      }
+    }
+  }
+
+  @override
+  void assembleSemanticsNode(
+    SemanticsNode node,
+    SemanticsConfiguration config,
+    Iterable<SemanticsNode> children,
+  ) {
+    if (!_semanticsDescribeFailed) {
+      try {
+        _fault('assembleSemanticsNode');
+        super.assembleSemanticsNode(node, config, children);
+        return;
+      } catch (error, stackTrace) {
+        _reportQueryFailure('assembleSemanticsNode', error, stackTrace);
+      }
+    }
+    node.updateWith(
+      config: config,
+      childrenInInversePaintOrder: children is List<SemanticsNode>
+          ? children
+          : children.toList(),
+    );
+  }
+
+  @override
+  double computeDistanceToActualBaseline(TextBaseline baseline) {
+    if (_layoutBroken) return 0;
+    try {
+      _fault('computeDistanceToActualBaseline');
+      return super.computeDistanceToActualBaseline(baseline);
+    } catch (error, stackTrace) {
+      _reportQueryFailure('computeDistanceToActualBaseline', error, stackTrace);
+      return 0;
+    }
+  }
 
   // Flutter's separate intrinsic painter compares span identity/equality. It
   // cannot observe opaque span mutations, even after the painted paragraph was
@@ -451,6 +827,7 @@ class RenderTextAutoWrap extends RenderParagraph {
   void systemFontsDidChange() {
     super.systemFontsDidChange();
     _clearSourceQueries();
+    _SharedLayoutCache.clear();
     // A plan owns shaped range widths, and a cached selection owns the
     // resulting native geometry. Neither remains valid after font metrics
     // change, even when every public render input is unchanged.
@@ -630,11 +1007,23 @@ class RenderTextAutoWrap extends RenderParagraph {
       ? maxWidth
       : double.infinity;
 
-  TextWrapPlan _planFor(_RendererPlanKey key) {
+  TextWrapPlan _planFor(_RendererPlanKey key, {required bool shareable}) {
     final plan = _cachedPlan;
-    if (_cachedPlanKey == key && plan != null) {
+    // A plan retains its last measurement key, which owns the source span.
+    // Interactive or opaque sources must never write into a globally held plan.
+    if (_cachedPlanKey == key &&
+        plan != null &&
+        (shareable || !_cachedPlanShared)) {
       _planHits++;
       return plan;
+    }
+    final shared = shareable ? _SharedLayoutCache.plan(key) : null;
+    if (shared != null) {
+      _planHits++;
+      _cachedPlanKey = key;
+      _cachedPlan = shared;
+      _cachedPlanShared = true;
+      return shared;
     }
     _planMisses++;
     final created = createTextWrapPlan(
@@ -644,6 +1033,8 @@ class RenderTextAutoWrap extends RenderParagraph {
     );
     _cachedPlanKey = key;
     _cachedPlan = created;
+    _cachedPlanShared = shareable;
+    if (shareable) _SharedLayoutCache.putPlan(key, created);
     return created;
   }
 
@@ -954,7 +1345,7 @@ final class _UnmeasurablePlaceholder implements Exception {
 }
 
 final class _RendererPlanKey {
-  const _RendererPlanKey({
+  _RendererPlanKey({
     required this.text,
     required this.model,
     required this.strategy,
@@ -971,9 +1362,15 @@ final class _RendererPlanKey {
       _sameModel(model, other.model) &&
       _sameStrategy(strategy, other.strategy);
 
+  // Keys are immutable and hashed by several caches per layout.
+  late final int _hash = Object.hash(
+    text,
+    _modelHash(model),
+    _strategyHash(strategy),
+  );
+
   @override
-  int get hashCode =>
-      Object.hash(text, _modelHash(model), _strategyHash(strategy));
+  int get hashCode => _hash;
 }
 
 bool _sameModel(PhraseModel? left, PhraseModel? right) {
@@ -1030,6 +1427,21 @@ final class _RendererMeasurementKey {
     required this.placeholders,
   }) : source = _InlineSpanCacheKey(source);
 
+  _RendererMeasurementKey._withoutWidth(_RendererMeasurementKey other)
+    : source = other.source,
+      maxWidth = 0,
+      textDirection = other.textDirection,
+      textScaler = other.textScaler,
+      locale = other.locale,
+      strutStyle = other.strutStyle,
+      textWidthBasis = other.textWidthBasis,
+      textHeightBehavior = other.textHeightBehavior,
+      placeholders = other.placeholders;
+
+  /// The same inputs with the available width ignored.
+  _RendererMeasurementKey withoutWidth() =>
+      _RendererMeasurementKey._withoutWidth(this);
+
   final _InlineSpanCacheKey source;
   final double maxWidth;
   final TextDirection textDirection;
@@ -1053,8 +1465,7 @@ final class _RendererMeasurementKey {
       textHeightBehavior == other.textHeightBehavior &&
       placeholders == other.placeholders;
 
-  @override
-  int get hashCode => Object.hash(
+  late final int _hash = Object.hash(
     source,
     maxWidth,
     textDirection,
@@ -1065,6 +1476,101 @@ final class _RendererMeasurementKey {
     textHeightBehavior,
     placeholders,
   );
+
+  @override
+  int get hashCode => _hash;
+}
+
+/// A tree of built-in text spans without recognizers or hover callbacks.
+///
+/// Only such trees are retained by the cross-renderer caches: a recognizer or
+/// callback can capture a widget State that must not outlive its renderer, and
+/// a WidgetSpan keeps identity-bound children.
+bool _isPlainTextTree(InlineSpan source) {
+  final pending = <InlineSpan>[source];
+  while (pending.isNotEmpty) {
+    final span = pending.removeLast();
+    if (span.runtimeType != TextSpan) return false;
+    span as TextSpan;
+    if (span.recognizer != null ||
+        span.onEnter != null ||
+        span.onExit != null) {
+      return false;
+    }
+    pending.addAll(span.children ?? const <InlineSpan>[]);
+  }
+  return true;
+}
+
+final class _SharedSelection {
+  const _SharedSelection(this.result, this.effectiveText);
+
+  final TextWrapResult result;
+  final InlineSpan effectiveText;
+}
+
+/// Bounded LRU caches shared by every renderer, so a re-created text widget
+/// with the same text, style, width, and strategy skips selection entirely.
+///
+/// Entries are valid only while the font set and platform locale are unchanged.
+final class _SharedLayoutCache {
+  static const maxTextLength = 1024;
+  static const _maxSelections = 64;
+  static const _maxPlans = 32;
+  static final _selections = <_RendererSelectionKey, _SharedSelection>{};
+  static final _plans = <_RendererPlanKey, TextWrapPlan>{};
+  static Listenable? _fonts;
+  static Locale? _platformLocale;
+
+  /// Validates the entries against the current fonts and platform locale.
+  /// Call once per layout before using the lookups below.
+  static void prepare() {
+    final fonts = PaintingBinding.instance.systemFonts;
+    if (!identical(_fonts, fonts)) {
+      _fonts?.removeListener(clear);
+      fonts.addListener(clear);
+      _fonts = fonts;
+    }
+    final locale = PlatformDispatcher.instance.locale;
+    if (_platformLocale != locale) {
+      clear();
+      _platformLocale = locale;
+    }
+  }
+
+  static _SharedSelection? selection(_RendererSelectionKey key) {
+    final hit = _selections.remove(key);
+    if (hit != null) _selections[key] = hit;
+    return hit;
+  }
+
+  static void putSelection(_RendererSelectionKey key, _SharedSelection value) {
+    _selections.remove(key);
+    _selections[key] = value;
+    if (_selections.length > _maxSelections) {
+      _selections.remove(_selections.keys.first);
+    }
+  }
+
+  static TextWrapPlan? plan(_RendererPlanKey key) {
+    final hit = _plans.remove(key);
+    if (hit != null) _plans[key] = hit;
+    return hit;
+  }
+
+  static void putPlan(_RendererPlanKey key, TextWrapPlan value) {
+    _plans.remove(key);
+    _plans[key] = value;
+    if (_plans.length > _maxPlans) _plans.remove(_plans.keys.first);
+  }
+
+  static int get selectionCount => _selections.length;
+  static int get planCount => _plans.length;
+
+  static void clear() {
+    _selections.clear();
+    _plans.clear();
+  }
 }
 
 bool _containsOpaqueSpan(InlineSpan source) {
@@ -1084,7 +1590,7 @@ bool _containsOpaqueSpan(InlineSpan source) {
 /// locale and spellOut. They are nevertheless part of this renderer's shaped
 /// text and semantics contract, including when inherited by nested spans.
 final class _InlineSpanCacheKey {
-  const _InlineSpanCacheKey(this.span);
+  _InlineSpanCacheKey(this.span);
 
   final InlineSpan span;
 
@@ -1092,8 +1598,10 @@ final class _InlineSpanCacheKey {
   bool operator ==(Object other) =>
       other is _InlineSpanCacheKey && _sameInlineSpan(span, other.span);
 
+  late final int _hash = _inlineSpanHash(span);
+
   @override
-  int get hashCode => _inlineSpanHash(span);
+  int get hashCode => _hash;
 }
 
 bool _sameInlineSpan(InlineSpan left, InlineSpan right) {
@@ -1138,18 +1646,41 @@ bool _sameInlineSpan(InlineSpan left, InlineSpan right) {
   return true;
 }
 
-int _inlineSpanHash(InlineSpan span) {
-  if (span is! TextSpan) return Object.hash(span.runtimeType, span);
-  return Object.hash(
-    span.runtimeType,
-    span,
-    span.locale,
-    span.spellOut,
-    Object.hashAll([
-      for (final child in span.children ?? const <InlineSpan>[])
-        _inlineSpanHash(child),
-    ]),
-  );
+int _inlineSpanHash(InlineSpan source) {
+  // TextSpan.hashCode recursively visits children. Hashing it and then hashing
+  // every subtree again makes a nested rich source quadratic on a cache miss.
+  // Mirror our iterative equality contract, including child-list shape.
+  final values = <Object?>[];
+  final pending = <InlineSpan>[source];
+  while (pending.isNotEmpty) {
+    final span = pending.removeLast();
+    values.add(span.runtimeType);
+    if (span.runtimeType != TextSpan) {
+      values.add(span);
+      continue;
+    }
+    span as TextSpan;
+    values.addAll([
+      span.style,
+      span.text,
+      span.recognizer,
+      span.semanticsLabel,
+      span.semanticsIdentifier,
+      span.onEnter,
+      span.onExit,
+      span.mouseCursor,
+      span.locale,
+      span.spellOut,
+      span.children?.length,
+    ]);
+    final children = span.children;
+    if (children != null) {
+      for (var i = children.length - 1; i >= 0; i--) {
+        pending.add(children[i]);
+      }
+    }
+  }
+  return Object.hashAll(values);
 }
 
 InlineSpan _metadataResetSpan(InlineSpan current) {
@@ -1161,7 +1692,7 @@ InlineSpan _metadataResetSpan(InlineSpan current) {
 }
 
 final class _RendererSelectionKey {
-  const _RendererSelectionKey({
+  _RendererSelectionKey({
     required this.plan,
     required this.measurement,
     required this.minWidth,
@@ -1190,8 +1721,7 @@ final class _RendererSelectionKey {
       overflow == other.overflow &&
       maxLines == other.maxLines;
 
-  @override
-  int get hashCode => Object.hash(
+  late final int _hash = Object.hash(
     plan,
     measurement,
     minWidth,
@@ -1200,6 +1730,9 @@ final class _RendererSelectionKey {
     overflow,
     maxLines,
   );
+
+  @override
+  int get hashCode => _hash;
 }
 
 final class _PlaceholderCacheKey {
@@ -1228,8 +1761,10 @@ final class _PlaceholderCacheKey {
     return true;
   }
 
+  late final int _hash = Object.hashAll(dimensions);
+
   @override
-  int get hashCode => Object.hashAll(dimensions);
+  int get hashCode => _hash;
 }
 
 final class _SourceQueryMetrics {

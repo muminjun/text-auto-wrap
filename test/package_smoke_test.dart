@@ -3,6 +3,6 @@ import 'package:text_auto_wrap/text_auto_wrap.dart';
 
 void main() {
   test('package exposes its version', () {
-    expect(textAutoWrapVersion, '0.1.2');
+    expect(textAutoWrapVersion, '0.1.3');
   });
 }

@@ -12,7 +12,7 @@ Flutter의 일반 텍스트와 리치 텍스트에 모델 기반 의미 단위 �
 
 ```yaml
 dependencies:
-  text_auto_wrap: ^0.1.2
+  text_auto_wrap: ^0.1.3
 ```
 
 ```dart
@@ -186,10 +186,11 @@ controller.dispose();
 | `unmeasurablePlaceholder` | `WidgetSpan` 크기 또는 필수 baseline을 일관되게 측정할 수 없습니다. |
 | `unsupportedSpanTransformation` | 커스텀 `InlineSpan` 상태를 잃지 않고 변환할 수 없습니다. |
 | `invalidRuntimeMeasurement` / `rendererFallback` | 런타임 측정 또는 보호된 renderer 작업이 실패했습니다. |
+| `layoutGuard` / `nativeLayoutGuard` / `<query>Guard` | 의미 단위 단계 밖의 실패를 최종 보호 장치가 흡수했습니다. 문단 layout 또는 `computeDryLayoutGuard`, `paintGuard`, `hitTestChildrenGuard` 같은 부모 조회가 대상입니다. |
 
 Reason은 사용자에게 보여 주는 번역 문자열이 아니라 진단값으로 다루세요. 커스텀 selector는 앱 전용 reason을 반환할 수 있습니다.
 
-Fallback 결과에는 유효성이 확인된 Flutter 기본 범위·너비가 들어 있습니다. 이미 실패한 native 진단 측정은 같은 layout에서 반복하지 않습니다. 기본 geometry를 안전하게 표현할 수 없으면 `controller.result`를 `null`로 비우고 원본 span을 Flutter 문단에 그대로 전달합니다. `controller.failures`에서 실패 단계·reason·예외·스택을 확인할 수 있으며, 다음 layout 성공 시 실패 기록이 지워집니다. Listener 알림은 프레임 끝에 전달합니다. `null` 결과를 빈 문자열이나 너비 0으로 해석하지 마세요. Flutter 기본 렌더링 자체가 실패하면 그 오류는 그대로 전파됩니다.
+Fallback 결과에는 유효성이 확인된 Flutter 기본 범위·너비가 들어 있습니다. 이미 실패한 native 진단 측정은 같은 layout에서 반복하지 않습니다. 기본 geometry를 안전하게 표현할 수 없으면 `controller.result`를 `null`로 비우고 원본 span을 Flutter 문단에 그대로 전달합니다. `controller.failures`에서 실패 단계·reason·예외·스택을 확인할 수 있으며, 다음 layout 성공 시 실패 기록이 지워집니다. Listener 알림은 프레임 끝에 전달합니다. `null` 결과를 빈 문자열이나 너비 0으로 해석하지 마세요. 의미 단위 단계가 실패하면 원문으로 문단을 다시 layout하고 `layoutGuard` 실패를 기록합니다. Flutter 기본 문단도 원문을 layout하지 못하면 예외를 던지는 대신 `nativeLayoutGuard` 실패를 기록하고 해당 텍스트만 최소 크기의 비활성 상태(그리기·hit 대상 없음)가 되어 부모 layout은 끝까지 진행됩니다.
 
 ## Unicode, 성능, 접근성
 
@@ -219,3 +220,18 @@ flutter run -d chrome
 의미 단위 처리는 UTF-16 65,536 단위, Span occurrence 16,384개, root를 0으로 세는 깊이 1,024까지 제한합니다. 제한을 넘으면 모델·후보 탐색을 생략하고 원문을 Flutter에 전달합니다. Widget 경로에서는 중복 진단 shaping도 생략하므로 `controller.result`가 `null`일 수 있고 `failures`에 `TextWrapInputLimitException`이 기록됩니다. Core `calculate()`·`predict()`·`aggregate()`는 입력 길이 초과 시 독립적인 `TextWrapInputLimitException`을 던집니다. `select()`는 유효한 native layout을 받았다면 `inputLimit` 이유로 재사용하고 calculation-limit 기록은 남기지 않으며, native layout이 없으면 같은 예외를 던집니다. 기존 계산 상한 enum과 invalid-input 예외의 exhaustive switch는 유지됩니다. Flutter 자체가 원문을 표시하는 비용은 이 제한으로 제거되지 않습니다.
 
 ZWJ 바로 뒤, 숫자 묶음 내부와 주요 괄호의 안쪽에는 의미 단위 개행을 추가하지 않습니다. GL/WJ 양옆 보호는 일반 공백 앞 예외까지 허용하는 Unicode 기본 규칙보다 보수적입니다. 전체 UAX #14 준수를 보장하지 않습니다. Controller를 공유하면 가장 최근 commit이 최종 결과가 되므로 독립적인 관측에는 위젯별 Controller를 사용하세요.
+
+## 0.1.3 성능 옵션
+
+동일한 일반 `TextSpan` 트리는 검증된 선택 결과 최대 64개와 계획 최대 32개를 공유합니다.
+대상 원문은 UTF-16 1,024단위 이하이며, recognizer·hover 콜백·`WidgetSpan`·커스텀 span은
+제외됩니다. 글꼴이나 플랫폼 locale이 바뀌면 공유 캐시를 비웁니다. 폭이 달라도 placeholder
+크기 등 실제 측정 입력이 같으면 범위 너비를 재사용합니다. 커스텀 predictor·calculator·selector는
+설정 객체의 정체성·동등성이 유지되는 동안 같은 입력에 같은 결과를 반환해야 합니다. 외부 설정이
+바뀌면 기존 캐시 키 객체를 변경하는 대신 새 model·strategy를 전달하세요. 직접 호출하는
+`TextWrapPlan.calculate`·`select`는 커스텀 calculator를 실행하고 검증 오류를 전달합니다.
+
+`optimalLayouts(assumeMonotonicWidths: true)`와
+`greedy(assumeMonotonicWidths: true)`는 범위가 길어질 때 너비가 줄지 않는 측정기에만 쓰는
+선택 옵션입니다. 다른 측정기에서는 결과가 달라질 수 있으며 기본값은 꺼져 있습니다.
+반복 조건·분산·레이아웃 동일성 비교는 [성능 벤치마크](doc/performance-benchmark.md)를 참고하세요.

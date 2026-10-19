@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.3 - 2026-10-19
+
+- Reuse bounded shared selections and plans for equivalent plain text trees, and retain range widths across width changes. Interactive, widget, and custom spans stay renderer-local; system-font or platform-locale changes invalidate shared entries.
+- Skip bundled-model prediction/calculation for an already fitting single native line under `BalanceStrategy` with a built-in calculator. Caller-supplied predictors, aggregators, and calculators continue through validation.
+- Score bundled BudouX space models only at the whitespace starts they consume, preserving the full-inference predictions. Hash built-in span trees in one iterative pass instead of revisiting nested subtrees.
+- Skip provably dominated optimizer transitions before requesting range measurements, without assuming monotonic widths. The local long-phrase 256-request limit rate falls from 40.0% to 31.7%; four formerly limited conditions now equal the unbounded 0.1.2 semantic layout instead of native fallback.
+- Add optional `assumeMonotonicWidths` to `optimalLayouts` and `greedy`; it remains off by default because shaping can shorten an extended range.
+- Isolate shared plans before switching to interactive source spans, and preserve parent-query failure records through the following layout/controller snapshot.
+- Reject incomplete or inconsistent benchmark references and non-positive repetition counts.
+- Add a single-process, multi-scale benchmark with repeated statistics and reference-layout assertions. See `doc/performance-benchmark.md` for conditions, variation, and limitations.
+
+- Fix native line measurement when a line holds a single glyph wider than the available width (for example a text laid out at a width below one character, such as 0 during a transition, at large text scales). The engine then reports the spaces after that line outside every line boundary, which 0.1.1 surfaced as `InvalidBoundaryException` from layout and 0.1.2 absorbed as a `nativeMeasurement` failure on every such layout. Hanging spaces now close the previous line, so semantic wrapping and diagnostics keep working and no failure is recorded.
+- Add a final layout guard to `RenderTextAutoWrap`: any failure while laying out one text falls back to the plain source paragraph (recorded as a `layoutGuard` failure), and a paragraph the engine cannot lay out at all becomes inert at the smallest size so the parent layout always completes.
+- Guard intrinsic, dry-layout, dry-baseline and baseline queries, `paint`, `hitTestChildren`, semantics description and assembly, and source replacement. A failing query answers from the native paragraph (or a safe value) and is reported as a `<query>Guard` failure instead of throwing into the parent.
+- Add regression coverage for sub-glyph widths with Hangul phrases, fault injection at every guarded point, equivalence with the default `Text` across text scales, `maxLines`, ellipsis, widths, and recognizers, and opt-in sweep reviews that can use a real font through `--dart-define=TAW_FONT_PATH`.
+
 ## 0.1.2 - 2026-10-19
 
 - Preserve active selections when an equivalent rich source moves with a GlobalKey.

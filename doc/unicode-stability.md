@@ -24,7 +24,7 @@ Native 범위는 raw bounds와 진행 여부를 먼저 검사하고, CRLF delimi
 
 의미 단위 계산이 실패해도 이미 유효한 native layout이 있으면 재사용합니다. Native 진단 geometry까지 유효하지 않으면 원본 span을 최종 `RenderParagraph`에 전달하며, 계산 결과와 선택 캐시를 비웁니다. 이때 `controller.result == null`은 geometry 부재이며 빈 문자열·너비 0을 뜻하지 않습니다.
 
-`controller.failures`는 최근 layout의 `TextWrapFailure` 목록입니다. 각 항목의 `stage`, `reason`, `error`, `stackTrace`로 semantic 계산 실패와 native 진단 실패를 구분합니다. 알림은 프레임 끝에 전달하며, 같은 오류의 반복은 알림 루프를 만들지 않습니다. 이후 layout 성공 시 실패 기록이 사라집니다. 기본 렌더링 자체의 실패는 숨기지 않습니다.
+`controller.failures`는 최근 layout의 `TextWrapFailure` 목록입니다. 각 항목의 `stage`, `reason`, `error`, `stackTrace`로 semantic 계산 실패와 native 진단 실패를 구분합니다. 알림은 프레임 끝에 전달하며, 같은 오류의 반복은 알림 루프를 만들지 않습니다. 이후 layout 성공 시 실패 기록이 사라집니다. 기본 렌더링 자체가 원문을 layout하지 못해도 해당 텍스트만 비활성 상태(`nativeLayoutGuard` 실패 기록)로 두고 부모 layout은 끝까지 진행합니다.
 
 ```dart
 controller.addListener(() {
